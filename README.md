@@ -124,7 +124,7 @@ No trial, no ads, no account and no tracking. Open source under the GPL, with FF
 - **Poster and details first:** a five-second title card with the poster, title, year, cast and ratings before the film starts. You can switch it off.
 - **Film and show details:** poster, plot, director, writers, cast, genres, age rating, running time and IMDb, Rotten Tomatoes and Metacritic scores, with no account needed.
 - **Picture subtitles become text:** Blu-ray PGS and DVD VobSub are read on your Mac, so an HEVC film with PGS subtitles plays without converting the video.
-- **A window that gets out of the way:** while casting, the video window shrinks to half size, dims the poster and shows who you're connected to, with play, pause and the timeline.
+- **A window that gets out of the way:** while casting, the video window shrinks to half size and keeps showing the film, silently, under a grey veil that says who you're connected to, with play, pause and the timeline.
 - **Updates itself:** Check for Updates downloads the new version, confirms it's signed by Leech Software, closes and reopens.
 - **Nothing to install:** FFmpeg is inside the app. No Homebrew and no command line.
 

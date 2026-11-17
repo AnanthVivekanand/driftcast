@@ -183,12 +183,14 @@ final class StreamSession: @unchecked Sendable {
 
     /// A title card stitched in front of the content on this Mac and AirPlay (see `TitleCard`):
     /// a few seconds of poster and title before planned segment `atSegment`, separated from the
-    /// film by HLS discontinuities so its own codecs and picture size don't matter.
+    /// film by an HLS discontinuity. It is encoded like the film (`format`), because an Apple TV
+    /// won't play on past a discontinuity where the codecs or sound channels change.
     struct Intro {
         var card: Data
         var size: CGSize
         var atSegment: Int
         var hardware: Bool
+        var format: TitleCard.Format
         var duration: Double = TitleCard.seconds
     }
 
@@ -359,7 +361,8 @@ final class StreamSession: @unchecked Sendable {
             do {
                 try intro.card.write(to: card)
                 guard let exe = FFmpeg.ffmpeg else { throw FFmpegError.notFound }
-                _ = try await FFmpeg.run(exe, TitleCard.ffmpegArguments(card: card, size: intro.size, hardware: intro.hardware, outputDirectory: dir))
+                _ = try await FFmpeg.run(exe, TitleCard.ffmpegArguments(card: card, size: intro.size, hardware: intro.hardware,
+                                                                          format: intro.format, outputDirectory: dir))
                 self?.setIntroState(.ready)
             } catch {
                 self?.setIntroState(.failed)

@@ -9,7 +9,7 @@ your Mac on a Chromecast, an Apple TV or an AirPlay 2 TV, and on the Mac itself.
 only what the device can't play, while the video is playing, so nearly any file plays on nearly
 any device without waiting and without quality loss where none is needed.
 
-This document describes version 1.0 as of 9 November 2026. It is written from
+This document describes version 1.0.1 as of 17 November 2026. It is written from
 the source code, so every statement below corresponds to something the code does. Where a
 feature has not been tried on real hardware, it says so.
 
@@ -130,7 +130,8 @@ feature has not been tried on real hardware, it says so.
 - **A title card when a video starts** (switchable): five seconds of the
   poster beside the title, year, running time, age rating, genres, director, cast and
   ratings, fading in and out. On this Mac and AirPlay it is a short clip stitched in front
-  of the film inside the stream; a Chromecast instead stays on its own poster-and-title
+  of the film inside the stream, encoded like the film (same codec, bit depth, frame rate and
+  sound channels) because an Apple TV stops where the two differ; a Chromecast instead stays on its own poster-and-title
   screen for the same five seconds before playing. HDR films that are passed through get
   no card, so the TV does not switch picture modes twice.
 - Only the title and year are sent, never the file; results and artwork are cached, the
@@ -163,10 +164,11 @@ feature has not been tried on real hardware, it says so.
   starts — fingerprint first, then title (season and episode for a show) — and the best match
   is downloaded, kept with the video and turned on; this takes a few seconds and is tried once
   per video per run.
-- **While casting** the video window dims the film's poster and lays a big grey streaming mark
-  under "Connected to <device>, streaming video…", shrinks to half its size, and keeps only
-  play/pause and the timeline, which moves the position on the device. It goes back to its
-  size when playback returns to this Mac.
+- **While casting** the video window shrinks to half its size and shows the video under a grey
+  veil with a big streaming mark and "Connected to <device>, streaming video…". The picture is
+  a silent copy that follows the device's position (the poster stands in until it has a
+  picture), and the window keeps only play/pause and the timeline, which moves the position on
+  the device. It goes back to its size when playback returns to this Mac.
 - **Video window footer:** a thin bar under the picture reads "Closed Captions: English,
   Spanish" (or "No closed captions in this video") with the same menu as the playback bar.
 - **"I don't care about subtitles"** (Settings > Subtitles) hides that footer and the Closed
@@ -218,7 +220,9 @@ feature has not been tried on real hardware, it says so.
   so the TV remote's skip and scrub work, and the device shows the real duration.
 - Media keys and the Now Playing panel on the Mac: play, pause, next, previous, skip, scrub.
 - Keeps the Mac awake while serving a device.
-- Closing the main window quits the app; closing the video window keeps playing (on a device).
+- Closing the main window quits the app. Closing the video window keeps a device playing, but
+  pauses a video playing on this Mac; it also pauses if AirPlay ends while the window is closed,
+  rather than going on as sound alone. Play opens the window again.
 
 ### Menus and shortcuts
 - **Driftcast:** About Driftcast (the full description, requirements, licence and website),
@@ -341,10 +345,11 @@ feature has not been tried on real hardware, it says so.
    are cached). The complete VOD playlist is therefore known up front.
 
 7. **The title card** (when on, for this Mac and AirPlay) is drawn by the app at the stream's
-   picture size and encoded by a second ffmpeg into a short H.264 + silent AAC clip while the
-   first segments are produced. The playlist places it before the segment where playback
-   starts, between `EXT-X-DISCONTINUITY` tags with its own `EXT-X-MAP`, so the film's own
-   codecs follow unchanged. Every position the device reports is mapped back to film time, and
+   picture size and encoded by a second ffmpeg into a short clip with silent sound while the
+   first segments are produced, in the film's own formats (`TitleCard.Format`: HEVC Main 10
+   before 10-bit HEVC, H.264 before converted video, and the film's audio codec, channel
+   layout and sample rate). The playlist places it before the segment where playback
+   starts, between `EXT-X-DISCONTINUITY` tags with its own `EXT-X-MAP`. Every position the device reports is mapped back to film time, and
    subtitle cues are moved past the card. Starting from the beginning is exact; resuming
    starts the film at the segment boundary just before the saved position. A file that could
    have been played directly is repackaged (not converted) so the card can be included.

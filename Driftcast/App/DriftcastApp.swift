@@ -59,8 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The red close button on the main window quits Driftcast, as the user expects of a
         // single-window player. Other windows (Video, Settings) just close.
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
-            guard let window = note.object as? NSWindow, window.identifier?.rawValue.hasPrefix("main") == true else { return }
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            guard let window = note.object as? NSWindow, let id = window.identifier?.rawValue else { return }
+            if id.hasPrefix("video") {
+                MainActor.assumeIsolated { Self.player?.videoWindowClosed() }
+            } else if id.hasPrefix("main") {
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
         }
         // macOS may bring the Video window back from the last run; it is only wanted once a
         // video is playing on this Mac.

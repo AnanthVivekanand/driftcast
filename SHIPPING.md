@@ -49,9 +49,12 @@ The repository is `UpdateConfig.repository` (`leechsoftware/driftcast`). No acco
 involved; GitHub's public API allows 60 requests an hour per network address.
 
 **The version number is changed by hand only.** `MARKETING_VERSION` in the project is the
-version (1.0 at the time of writing). It stays as it is until the owner decides a new version
+version (1.0.1 at the time of writing). It stays as it is until the owner decides a new version
 is due; nothing bumps it automatically. The app offers an update only when a release's tag is
-a higher number than the version it is running, so a rebuilt 1.0 is never offered to a 1.0.
+a higher number than the version it is running, so a rebuilt 1.0.1 is never offered to a 1.0.1.
+
+Links for people always point at `releases/latest`, never at a particular version's page or
+file, so the website and README stay right when a new release comes out.
 
 Per release:
 
@@ -62,7 +65,7 @@ Per release:
    `Driftcast-<version>.dmg` (for people), `Driftcast-<version>.zip` (for Check for Updates,
    which can only install a zip) and `SHA256SUMS.txt`. `Releases/` is git-ignored.
 3. Create a GitHub release tagged `v<version>` and attach both files:
-   `gh release create v1.0 Releases/1.0/Driftcast-1.0.dmg Releases/1.0/Driftcast-1.0.zip --title "Driftcast 1.0" --notes-file notes.md`
+   `gh release create v1.0.1 Releases/1.0.1/Driftcast-1.0.1.dmg Releases/1.0.1/Driftcast-1.0.1.zip --title "Driftcast 1.0.1" --notes-file notes.md`
    (with Driftcast's own token in `GH_TOKEN`; see the note on accounts below). Drafts and
    pre-releases are not offered to the app.
 4. If the bundled ffmpeg changed, update its versions and library table in `NOTICE.md`. The

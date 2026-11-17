@@ -34,6 +34,10 @@ final class PlaybackController: ObservableObject {
 
     let library: Library
     let localTarget = AVPlayerTarget()
+    /// The silent picture in the video window while a TV plays the video.
+    let mirror = CastingMirror()
+    /// What the device was given to play, which the mirror plays too.
+    private var streamURL: URL?
 
     let clock = PlaybackClock()
     var position: Double {
@@ -103,9 +107,20 @@ final class PlaybackController: ObservableObject {
         self.library = library
         localTarget.onStatus = { [weak self] s in self?.handle(s, from: .local) }
         localTarget.onExternalChange = { [weak self] active in
-            self?.isAirPlaying = active
-            self?.airPlayExpectedSince = active ? Date() : nil
-            self?.airPlayProblem = nil
+            guard let self else { return }
+            self.isAirPlaying = active
+            self.airPlayExpectedSince = active ? Date() : nil
+            self.airPlayProblem = nil
+            // AirPlay ended (from the TV, say) and AVPlayer carries on here: with the video
+            // window closed that would be sound from a video nobody can see. AirPlay can also
+            // report a stop for a moment while connecting, so look again after a pause.
+            if !active {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard let self, !self.localTarget.isExternal else { return }
+                    self.pauseIfUnseen()
+                }
+            }
         }
         setupRemoteCommands()
         housekeeping = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -372,7 +387,8 @@ final class PlaybackController: ObservableObject {
             if cardWanted, isLocal, let grid, let size = plan.outputVideoSize, let v = info.video,
                !(v.isHDR && !plan.isTranscodingVideo),   // an SDR card before HDR would make the TV switch modes twice
                let card = TitleCard.render(poster: artwork, title: item.title, details: details, size: size) {
-                session.intro = StreamSession.Intro(card: card, size: size, atSegment: grid.index(at: time), hardware: settings.hardware)
+                session.intro = StreamSession.Intro(card: card, size: size, atSegment: grid.index(at: time), hardware: settings.hardware,
+                                                    format: TitleCard.Format(plan: plan))
             }
 
             if plan.mode == .hls {
@@ -393,6 +409,7 @@ final class PlaybackController: ObservableObject {
                 path = session.castPath
             }
             let url = await MediaServer.shared.url(path: path, host: host)
+            streamURL = url
             var subtitleURL: URL?
             if cues != nil {
                 subtitleURL = isLocal ? url : await MediaServer.shared.url(path: session.subtitlePath, host: host)
@@ -440,6 +457,8 @@ final class PlaybackController: ObservableObject {
             s.stop()
         }
         session = nil
+        streamURL = nil
+        mirror.stop()
         setStreaming(false)
     }
 
@@ -496,9 +515,30 @@ final class PlaybackController: ObservableObject {
 
     private func tick() {
         checkAirPlayReachability()
+        updateMirror()
         guard let session else { return }
         seekableRange = session.producedRange ?? 0...0
         if isPlaying { updateNowPlayingInfo() }
+    }
+
+    /// Keeps the window's silent copy where the TV is, while the window is open to show it.
+    private func updateMirror() {
+        var casting = remoteDeviceName != nil
+        #if DEBUG
+        // `-PreviewCastingWatermark Name` shows the casting window with no TV to hand.
+        if UserDefaults.standard.string(forKey: "PreviewCastingWatermark") != nil, nowPlaying != nil { casting = true }
+        #endif
+        guard casting, let url = streamURL, info?.video != nil, Self.videoWindowIsOpen else {
+            mirror.stop()
+            return
+        }
+        let time: Double
+        switch output {
+        case .local: time = localTarget.player.currentTime().seconds   // AirPlay reports the TV's clock
+        case .cast: time = session?.deviceTime(forFileTime: position) ?? position
+        }
+        guard time.isFinite else { return }
+        mirror.follow(url: url, time: time, playing: phase == .playing)
     }
 
     private func itemFinished() {
@@ -536,6 +576,7 @@ final class PlaybackController: ObservableObject {
         case .paused:
             target.play()
             phase = .playing
+            if output == .local && !isAirPlaying && !Self.videoWindowIsOpen { videoWindowRequest += 1 }
         case .idle, .failed:
             if let item = nowPlaying {
                 start(item, at: position, fresh: false)
@@ -551,6 +592,22 @@ final class PlaybackController: ObservableObject {
     func stop() {
         saveProgress(force: true)
         finishStop()
+    }
+
+    static var videoWindowIsOpen: Bool {
+        NSApp.windows.contains { $0.identifier?.rawValue.hasPrefix("video") == true && $0.isVisible }
+    }
+
+    /// The video window was closed. Casting carries on (the window only shows "connected to"),
+    /// but a video playing on this Mac pauses rather than going on as sound alone.
+    func videoWindowClosed() {
+        pauseIfUnseen(windowClosing: true)
+    }
+
+    private func pauseIfUnseen(windowClosing: Bool = false) {
+        guard output == .local, !isAirPlaying, phase == .playing || phase == .buffering else { return }
+        guard windowClosing || !Self.videoWindowIsOpen else { return }
+        togglePause()
     }
 
     private func finishStop() {

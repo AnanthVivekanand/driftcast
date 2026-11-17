@@ -111,24 +111,117 @@ enum TitleCard {
         return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.92])
     }
 
+    /// What the film's stream carries, so the card can be encoded the same way. An Apple TV
+    /// stops at the switch from card to film when the two differ (an H.264 stereo card before
+    /// 10-bit HEVC with 5.1 sound would not play), although a Mac and Samsung TVs carry on.
+    struct Format: Equatable, Sendable {
+        var videoCodec = "h264"
+        var tenBit = false
+        var fps = 24.0
+        /// nil when the stream has no sound.
+        var audioCodec: String? = "aac"
+        var channels = 2
+        var sampleRate = 48_000
+
+        init() {}
+
+        init(plan: StreamPlan) {
+            if let v = plan.video {
+                if plan.isCopyingVideo, v.codec == "hevc" {
+                    videoCodec = "hevc"
+                    tenBit = v.bitDepth > 8
+                }
+                if v.fps > 1 { fps = plan.isCopyingVideo ? v.fps : min(v.fps, 60) }
+            }
+            guard let a = plan.audio else { audioCodec = nil; return }
+            channels = max(1, a.channels)
+            if a.sampleRate > 0 { sampleRate = a.sampleRate }
+            switch plan.audioAction {
+            case .none:
+                audioCodec = nil
+            case .copy:
+                audioCodec = a.codec
+            case .encode(let codec, let count, _):
+                audioCodec = codec.rawValue
+                channels = count
+                if codec == .aac { sampleRate = min(sampleRate, 48_000) }
+            }
+            // The Dolby encoders only take these rates.
+            if ["ac3", "eac3"].contains(audioCodec ?? ""), ![32_000, 44_100, 48_000].contains(sampleRate) {
+                sampleRate = 48_000
+            }
+        }
+
+        /// ffmpeg's name for the channel layout, which silent audio is generated in.
+        var channelLayout: String {
+            switch channels {
+            case 1: return "mono"
+            case 3: return "2.1"
+            case 4: return "quad"
+            case 5: return "5.0"
+            case 6: return "5.1"
+            case 7: return "6.1"
+            case 8: return "7.1"
+            default: return "stereo"
+            }
+        }
+
+        /// The common broadcast rates as exact fractions, so the card's frames line up with the film's.
+        var frameRate: String {
+            for (value, exact) in [(23.976, "24000/1001"), (29.97, "30000/1001"), (59.94, "60000/1001")] where abs(fps - value) < 0.01 {
+                return exact
+            }
+            return String(format: "%.3f", fps)
+        }
+
+        var audioArguments: [String] {
+            switch audioCodec {
+            case "ac3": return ["-c:a", "ac3", "-b:a", "384k"]
+            case "eac3": return ["-c:a", "eac3", "-b:a", "384k"]
+            case "flac": return ["-c:a", "flac", "-strict", "-2"]
+            case "alac": return ["-c:a", "alac"]
+            case "mp3": return ["-c:a", "libmp3lame", "-b:a", "128k"]
+            case "opus": return ["-c:a", "libopus", "-b:a", "128k"]
+            default: return ["-c:a", "aac", "-b:a", channels > 2 ? "192k" : "96k"]
+            }
+        }
+    }
+
     /// ffmpeg arguments turning the card into a short fMP4 HLS clip (`intro-init.mp4`,
-    /// `intro-0.m4s`, `intro.m3u8`) with silent stereo AAC, fading in and out.
-    static func ffmpegArguments(card: URL, size: CGSize, hardware: Bool, outputDirectory dir: URL) -> [String] {
+    /// `intro-0.m4s`, `intro.m3u8`) with silent sound, fading in and out, in `format`.
+    static func ffmpegArguments(card: URL, size: CGSize, hardware: Bool, format: Format = Format(),
+                                outputDirectory dir: URL) -> [String] {
         let width = max(320, Int(size.width) / 2 * 2), height = max(180, Int(size.height) / 2 * 2)
+        let pixels = format.videoCodec == "hevc" && format.tenBit ? (hardware ? "p010le" : "yuv420p10le") : "yuv420p"
         var args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-                    "-loop", "1", "-framerate", "24", "-i", card.path,
-                    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-                    "-t", String(format: "%.2f", seconds),
-                    "-vf", String(format: "scale=%d:%d,format=yuv420p,fade=t=in:st=0:d=0.4,fade=t=out:st=%.2f:d=0.5", width, height, seconds - 0.5),
-                    "-map", "0:v", "-map", "1:a"]
-        if hardware {
-            args += ["-c:v", "h264_videotoolbox", "-b:v", "6000k", "-g", "120", "-profile:v", "high", "-allow_sw", "1", "-realtime", "0"]
-        } else {
+                    "-loop", "1", "-framerate", format.frameRate, "-i", card.path]
+        if format.audioCodec != nil {
+            args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=\(format.channelLayout):sample_rate=\(format.sampleRate)"]
+        }
+        args += ["-t", String(format: "%.2f", seconds),
+                 // The pixel format comes last: fade works in 8 bits, and VideoToolbox refuses
+                 // Main 10 if its input isn't 10-bit.
+                 "-vf", String(format: "scale=%d:%d,fade=t=in:st=0:d=0.4,fade=t=out:st=%.2f:d=0.5,format=%@", width, height, seconds - 0.5, pixels),
+                 "-map", "0:v"]
+        args += format.audioCodec != nil ? ["-map", "1:a"] : ["-an"]
+        let gop = "\(max(1, Int((format.fps * 5).rounded(.up))))"
+        switch (format.videoCodec, hardware) {
+        case ("hevc", true):
+            args += ["-c:v", "hevc_videotoolbox", "-b:v", "6000k", "-g", gop, "-profile:v", format.tenBit ? "main10" : "main",
+                     "-allow_sw", "1", "-realtime", "0", "-tag:v", "hvc1"]
+        case ("hevc", false):
+            args += ["-c:v", "libx265", "-preset", "veryfast", "-crf", "22", "-x265-params", "log-level=error",
+                     "-profile:v", format.tenBit ? "main10" : "main", "-tag:v", "hvc1"]
+        case (_, true):
+            args += ["-c:v", "h264_videotoolbox", "-b:v", "6000k", "-g", gop, "-profile:v", "high", "-allow_sw", "1", "-realtime", "0"]
+        default:
             args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-profile:v", "high"]
         }
-        args += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
-                 "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-ar", "48000", "-shortest",
-                 "-f", "hls", "-hls_time", "10", "-hls_list_size", "0", "-hls_segment_type", "fmp4",
+        args += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+        if format.audioCodec != nil {
+            args += format.audioArguments + ["-ac", "\(format.channels)", "-ar", "\(format.sampleRate)", "-shortest"]
+        }
+        args += ["-f", "hls", "-hls_time", "10", "-hls_list_size", "0", "-hls_segment_type", "fmp4",
                  "-hls_fmp4_init_filename", "intro-init.mp4", "-hls_flags", "independent_segments+temp_file",
                  "-hls_segment_filename", dir.appendingPathComponent("intro-%d.m4s").path,
                  dir.appendingPathComponent("intro.m3u8").path]

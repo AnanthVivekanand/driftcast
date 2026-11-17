@@ -127,27 +127,46 @@ struct VideoWindow: View {
         return player.remoteDeviceName
     }
 
+    /// The bar under the picture (captions line, or the casting controls), as laid out.
+    @State private var barHeight: CGFloat = 0
+
+    fileprivate var pictureMinimum: CGSize {
+        castingName == nil ? CGSize(width: 480, height: 270) : CGSize(width: 320, height: 140)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            PlayerViewRepresentable(player: player.localTarget.player)
-                .frame(minWidth: castingName == nil ? 480 : 320, minHeight: castingName == nil ? 270 : 140)
-                .background(.black)
-                .overlay {
-                    if let name = castingName {
-                        CastingWatermark(deviceName: name, artwork: player.artwork)
-                    }
+            Group {
+                if let name = castingName {
+                    // A silent copy of the video under the overlay, following the TV.
+                    CastingPicture(mirror: player.mirror, deviceName: name, artwork: player.artwork)
+                } else {
+                    PlayerViewRepresentable(player: player.localTarget.player)
                 }
-            if castingName != nil {
-                // All this window is for while casting: is it playing, and where.
-                Divider()
-                CastingControls()
-            } else if !hideNotices, player.nowPlaying != nil {
-                Divider()
-                CaptionsFooter()
             }
+            .frame(minWidth: pictureMinimum.width, minHeight: pictureMinimum.height)
+            .background(.black)
+            // A VStack, not a Group: a Group would hand the measuring background to each child.
+            VStack(spacing: 0) {
+                if castingName != nil {
+                    // All this window is for while casting: is it playing, and where.
+                    Divider()
+                    CastingControls()
+                } else if !hideNotices, player.nowPlaying != nil {
+                    Divider()
+                    CaptionsFooter()
+                }
+            }
+            .background(GeometryReader { geometry in
+                Color.clear
+                    .onAppear { barHeight = geometry.size.height }
+                    .onChange(of: geometry.size.height) { barHeight = $0 }
+            })
         }
         .onAppear { fitWindow(casting: castingName != nil) }
         .onChange(of: castingName != nil) { casting in fitWindow(casting: casting) }
+        .onChange(of: barHeight) { _ in keepBarVisible() }
+        .onChange(of: player.nowPlaying?.url) { _ in keepBarVisible() }
         .background(WindowConfigurator { window in
             // Opened by the app when a video starts, never brought back by macOS at launch.
             window.isRestorable = false
@@ -179,6 +198,24 @@ extension VideoWindow {
         var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: wanted))
         frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
         window.setFrame(frame, display: true, animate: true)
+        keepBarVisible()
+    }
+
+    /// The window can't be smaller than the picture's minimum plus the bar under it. A saved or
+    /// restored size can be (the bar only appears once a video plays), which cut the bar off at
+    /// the bottom; the window then grows downwards, keeping its top-left corner.
+    fileprivate func keepBarVisible() {
+        DispatchQueue.main.async {
+            guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("video") == true }) else { return }
+            let needed = NSSize(width: pictureMinimum.width, height: pictureMinimum.height + barHeight)
+            window.contentMinSize = needed
+            let current = window.contentLayoutRect.size
+            guard current.height < needed.height - 0.5 || current.width < needed.width - 0.5 else { return }
+            let size = NSSize(width: max(current.width, needed.width), height: max(current.height, needed.height))
+            var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+            frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+            window.setFrame(frame, display: true, animate: false)
+        }
     }
 }
 
@@ -202,18 +239,38 @@ private struct CastingControls: View {
     }
 }
 
-/// Covers the picture while the video is on another device, so an empty or frozen window doesn't
-/// look like a fault: the film's poster, dimmed, with who it is playing on written across it.
+/// The video window's picture while a TV plays the video: the mirror's silent copy, under a grey
+/// veil with who it is playing on. Until the copy has a picture, the poster stands in.
+private struct CastingPicture: View {
+    @ObservedObject var mirror: CastingMirror
+    let deviceName: String
+    let artwork: NSImage?
+
+    var body: some View {
+        ZStack {
+            PlayerViewRepresentable(player: mirror.player, showsControls: false)
+            CastingWatermark(deviceName: deviceName, artwork: artwork, overVideo: mirror.hasPicture)
+        }
+    }
+}
+
+/// Covers the picture while the video is on another device: over the video a grey veil, or
+/// before there is any picture the film's poster, dimmed, with who it is playing on across it.
 private struct CastingWatermark: View {
     let deviceName: String
     let artwork: NSImage?
+    var overVideo = false
 
     var body: some View {
         GeometryReader { geometry in
             let height = geometry.size.height
             ZStack {
-                Color.black
-                if let artwork {
+                if overVideo {
+                    Color(white: 0.18).opacity(0.55)
+                } else {
+                    Color.black
+                }
+                if let artwork, !overVideo {
                     Image(nsImage: artwork)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -326,13 +383,15 @@ struct WindowConfigurator: NSViewRepresentable {
 
 private struct PlayerViewRepresentable: NSViewRepresentable {
     let player: AVPlayer
+    /// Off for the casting copy: its controls would act on the copy, not on the TV.
+    var showsControls = true
 
     func makeNSView(context: Context) -> AVPlayerView {
         let v = AVPlayerView()
         v.player = player
-        v.controlsStyle = .floating
-        v.showsFullScreenToggleButton = true
-        v.allowsPictureInPicturePlayback = true
+        v.controlsStyle = showsControls ? .floating : .none
+        v.showsFullScreenToggleButton = showsControls
+        v.allowsPictureInPicturePlayback = showsControls
         return v
     }
 

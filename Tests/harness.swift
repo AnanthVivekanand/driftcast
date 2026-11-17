@@ -119,7 +119,7 @@ cardDetails.directors = ["Jane Doe"]; cardDetails.cast = ["Someone", "Someone El
 let card = TitleCard.render(poster: cardPoster, title: "Test Movie", details: cardDetails, size: CGSize(width: 1920, height: 1080))
 check((card?.count ?? 0) > 20_000 && card?.prefix(2) == Data([0xFF, 0xD8]), "title card rendered as a JPEG (\(card?.count ?? 0) bytes)")
 try? card?.write(to: mediaDir.appendingPathComponent("title-card.jpg"))
-s1.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 0, hardware: true)
+s1.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 0, hardware: true, format: TitleCard.Format(plan: applePlan))
 let st1 = await_ { try await s1.start(at: 0) }
 check((try? st1.get()) != nil, "apple session started \((try? st1.get()) == nil ? "\(st1)" : "")")
 let master = try! await_ { await MediaServer.shared.url(path: s1.masterPath, host: host) }.get()
@@ -133,8 +133,32 @@ check(s1.intro != nil && plText.hasPrefix("#EXTM3U") && plText.contains("#EXT-X-
       "title card clip leads the playlist behind a discontinuity (card \(String(format: "%.2f", s1.intro?.duration ?? 0)) s)")
 let (introStatus, introInit, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("intro-init.mp4"))
 let (introSegStatus, introSeg, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("intro-0.m4s"))
-check(introStatus == 200 && introInit.count > 200 && introSegStatus == 200 && introSeg.count > 5_000 && MP4Boxes.codecs(inInit: introInit).first?.hasPrefix("avc1.") == true,
+check(introStatus == 200 && introInit.count > 200 && introSegStatus == 200 && introSeg.count > 5_000 && !MP4Boxes.codecs(inInit: introInit).isEmpty,
       "card clip served: init \(introInit.count) bytes (\(MP4Boxes.codecs(inInit: introInit))), segment \(introSeg.count) bytes")
+// The card is encoded like the film: an Apple TV stops at a discontinuity where the codecs change.
+let (_, filmInit, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("init.mp4"))
+let codecKinds = { (d: Data) in MP4Boxes.codecs(inInit: d).map { String($0.prefix(4)) } }
+check(!codecKinds(filmInit).isEmpty && codecKinds(introInit) == codecKinds(filmInit),
+      "card clip uses the film's codecs: \(codecKinds(introInit)) and \(codecKinds(filmInit))")
+let hevcInfo = MediaInfo(duration: 60, formatName: "mov,mp4,m4a,3gp,3g2,mj2", bitRate: nil,
+                         video: MediaInfo.Video(index: 0, codec: "hevc", codecTag: "hev1", profile: "Main 10", level: 120, pixFmt: "yuv420p10le", width: 1920, height: 1080, fps: 23.976, colorTransfer: nil, isDolbyVision: false),
+                         audio: [MediaInfo.Audio(index: 1, codec: "aac", profile: "LC", channels: 6, language: "eng", title: nil, isDefault: true, sampleRate: 48_000)], subtitles: [])
+let hevcPlan = StreamPlanner.plan(info: hevcInfo, file: URL(fileURLWithPath: "/tmp/x.mp4"), profile: .apple(), settings: settings, audioIndex: 1, subtitle: nil, options: PlaybackOptions())
+let hevcFormat = TitleCard.Format(plan: hevcPlan)
+check(hevcPlan.mode == .hls && hevcPlan.isCopyingVideo && hevcFormat.videoCodec == "hevc" && hevcFormat.tenBit && hevcFormat.audioCodec == "aac"
+      && hevcFormat.channels == 6 && hevcFormat.channelLayout == "5.1" && hevcFormat.frameRate == "24000/1001",
+      "card format for 10-bit HEVC (hev1) with 5.1 AAC: \(hevcFormat)")
+for hardware in [true, false] {
+    let dir = mediaDir.appendingPathComponent("card-hevc-\(hardware ? "gpu" : "cpu")")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let jpg = dir.appendingPathComponent("card.jpg")
+    try? card!.write(to: jpg)
+    let args = TitleCard.ffmpegArguments(card: jpg, size: CGSize(width: 1920, height: 1080), hardware: hardware, format: hevcFormat, outputDirectory: dir)
+    let ran = await_ { try await FFmpeg.run(FFmpeg.ffmpeg!, args) }
+    let codecs = MP4Boxes.codecs(inInit: (try? Data(contentsOf: dir.appendingPathComponent("intro-init.mp4"))) ?? Data())
+    check((try? ran.get()) != nil && codecs.first?.hasPrefix("hvc1.2.") == true && codecs.contains { $0.hasPrefix("mp4a.40.2") },
+          "10-bit HEVC card with 5.1 sound, \(hardware ? "on the GPU" : "in software"): \(codecs)")
+}
 let cardLength = s1.intro?.duration ?? 0
 check(s1.deviceTime(forFileTime: 0) == cardLength && s1.fileTime(forDeviceTime: 1) == 0 && abs(s1.fileTime(forDeviceTime: 10) - (10 - cardLength)) < 0.001
       && abs(s1.deviceDuration - (info.duration + cardLength)) < 0.001, "timeline mapping around the card")
@@ -143,7 +167,7 @@ check(subPlaylist.contains("subs-card.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:") && s
       && s1.subtitleSegment(Int(subCues[0].start / 10)).contains(WebVTT.stamp(subCues[0].start)),
       "subtitle rendition shares the card's discontinuities and keeps file-time cues")
 let s1c = StreamSession(plan: applePlan, source: mkv, duration: info.duration, grid: copyGrid, cues: subCues)
-s1c.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 2, hardware: true)
+s1c.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 2, hardware: true, format: TitleCard.Format(plan: applePlan))
 let midSubs = s1c.subtitlePlaylist()
 check(midSubs.contains("subs-2.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:5.000,\nsubs-card.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:") && midSubs.contains("subs-3.vtt") && s1c.subtitleSegment(3).contains("WEBVTT"),
       "a mid-file card splits the subtitle segments at the same point: \(midSubs.split(separator: "\n").filter { $0.hasPrefix("subs") || $0.hasPrefix("#EXT-X-D") }.joined(separator: " "))")
@@ -161,7 +185,7 @@ let (partialStatus, partialData, partialHeaders) = fetch(master.deletingLastPath
 check(partialStatus == 206 && partialData.count == 100 && (partialHeaders["Content-Range"] as? String)?.hasPrefix("bytes 0-99/") == true, "range request on an in-memory body")
 
 let s1b = StreamSession(plan: applePlan, source: mkv, duration: info.duration, grid: copyGrid, cues: nil)
-s1b.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 2, hardware: true)
+s1b.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 2, hardware: true, format: TitleCard.Format(plan: applePlan))
 let midPlaylist = s1b.mediaPlaylist() ?? ""
 check(midPlaylist.hasPrefix("#EXTM3U\n#EXT-X-VERSION:7") && midPlaylist.contains("#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:") && midPlaylist.contains("seg00001.m4s\n#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"intro-init.mp4\"")
       && s1b.deviceTime(forFileTime: 5) == 5 && abs(s1b.deviceTime(forFileTime: 25) - (25 + TitleCard.seconds)) < 0.001 && s1b.deviceStartTime(forFileTime: 22) == copyGrid.start(of: 2),
