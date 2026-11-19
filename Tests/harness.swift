@@ -347,6 +347,113 @@ do {
     lib.deletePlaylist(a); lib.deletePlaylist(b)
 }
 
+// Deleting a file that is listed twice, or one already deleted in the Finder, is not a failure
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-delete-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let twice = dir.appendingPathComponent("twice.mp4"), missing = dir.appendingPathComponent("missing.mp4")
+    try! Data("x".utf8).write(to: twice); try! Data("x".utf8).write(to: missing)
+    let pl = lib.newPlaylist(named: "harness-delete-again")
+    lib.add([twice, missing], to: pl)
+    var calls = 0
+    let both = lib.deleteFiles([twice, twice], trash: { calls += 1; try FileManager.default.removeItem(at: $0) })
+    check(both.isEmpty && calls == 1, "a file chosen twice is trashed once (\(calls) tries, \(both.count) failures)")
+    try! FileManager.default.removeItem(at: missing)
+    let real = lib.deleteFiles([missing])   // the real Trash, on a file that isn't there
+    let left = lib.playlists.first { $0.id == pl }!.items.count
+    check(real.isEmpty && left == 0, "a file already deleted in the Finder just leaves the playlist (\(real.count) failures, \(left) rows left)")
+    let unplugged = URL(fileURLWithPath: "/Volumes/harness-no-such-disk/Movies/film.mp4")
+    let away = lib.deleteFiles([unplugged])   // adding skips files that aren't there, so only the answer is checked
+    check(away.count == 1, "a file on a disk that isn't connected is reported, not taken as deleted (\(away.count) failures)")
+    lib.deletePlaylist(pl)
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// The error log: one line an error, with the reason and the numbers behind it
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-logs-\(UUID().uuidString)")
+    let file = dir.appendingPathComponent("Logs/Errors.log")
+    let under = NSError(domain: NSOSStatusErrorDomain, code: -5000)
+    let refused = NSError(domain: NSCocoaErrorDomain, code: 513,
+                          userInfo: [NSLocalizedDescriptionKey: "“a.mp4” couldn’t be moved to the trash.", NSUnderlyingErrorKey: under])
+    ErrorLog.record("Delete File", "/Volumes/Films/a.mp4", error: refused, to: file)
+    ErrorLog.record("Playback", "first line\nsecond line", to: file)
+    ErrorLog.flush()
+    let lines = ((try? String(contentsOf: file, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    check(lines.count == 2 && lines[0].hasSuffix("Delete File: /Volumes/Films/a.mp4: “a.mp4” couldn’t be moved to the trash. [NSCocoaErrorDomain 513, NSOSStatusErrorDomain -5000]"),
+          "error log: the reason and its error numbers on one line (\(lines.first ?? "nothing written"))")
+    check(lines.count == 2 && lines[1].hasSuffix("Playback: first line | second line") && lines[1].hasPrefix("20"),
+          "error log: a message with line breaks stays one dated line (\(lines.last ?? ""))")
+    let filler = String(repeating: "x", count: 1000)
+    for _ in 0..<700 { ErrorLog.record("Fill", filler, to: file) }
+    ErrorLog.record("Last", "kept", to: file)
+    ErrorLog.flush()
+    let grown = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    check(grown.utf8.count <= ErrorLog.sizeLimit && grown.utf8.count > 100_000 && grown.hasSuffix("Last: kept\n") && grown.hasPrefix("20"),
+          "error log: past its limit the older half goes, from a whole line (\(grown.utf8.count) bytes)")
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// The list of videos played: a file to read, the same as JSON, and a spreadsheet
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-watched-\(UUID().uuidString)")
+    let t0 = Date(timeIntervalSince1970: 1_795_000_000)
+    let a = WatchedList.Entry(title: "The Sopranos S4 E7", filename: "The.Sopranos.S04E07.1080p.mkv", played: t0)
+    let b = WatchedList.Entry(title: "Amélie, \"the film\" (2001)", filename: "Amelie, 2001.mkv", played: t0 + 7200)
+    let first = try! WatchedList.add(a, in: dir)
+    let restarted = try! WatchedList.add(.init(title: a.title, filename: a.filename, played: t0 + 600), in: dir)
+    let nextDay = try! WatchedList.add(.init(title: a.title, filename: a.filename, played: t0 + 3600), in: dir)
+    try! WatchedList.add(b, in: dir)
+    let read = WatchedList.entries(in: dir)
+    check(first && !restarted && nextDay && read.count == 3 && read.first == a && read.last == b,
+          "watched list: each viewing once, read back as written (\(read.count) entries)")
+    let json = (try? String(contentsOf: WatchedList.jsonURL(in: dir), encoding: .utf8)) ?? ""
+    let order = ["\"filename\"", "\"title\"", "\"played\""].compactMap { json.range(of: $0)?.lowerBound }
+    check(order.count == 3 && order == order.sorted() && json.contains("\"title\": \"Amélie, \\\"the film\\\" (2001)\"") && json.contains("\"played\": \"20"),
+          "watched list: JSON has filename, title, played, in that order")
+    let text = (try? String(contentsOf: WatchedList.textURL(in: dir), encoding: .utf8)) ?? ""
+    let newest = text.range(of: "Amélie")?.lowerBound, oldest = text.range(of: "The Sopranos")?.lowerBound
+    check(text.hasPrefix("Videos I have watched on Driftcast\n") && newest != nil && oldest != nil && newest! < oldest!
+          && text.contains("\nAmelie, 2001.mkv\n    Amélie, \"the film\" (2001)\n    Played "),
+          "watched list: the readable file is headed by its name, newest first, each video as file, name, when")
+    let hidden = (try? WatchedList.textURL(in: dir).resourceValues(forKeys: [.hasHiddenExtensionKey]))?.hasHiddenExtension
+    check(hidden == true, "watched list: the readable file shows without its .txt, so the JSON sits under it")
+    let csv = WatchedList.csv(read)
+    check(Array(csv.utf8.prefix(3)) == [0xEF, 0xBB, 0xBF]
+          && csv.contains("File,Title,Played\r\n\"Amelie, 2001.mkv\",\"Amélie, \"\"the film\"\" (2001)\",20")
+          && csv.contains("\r\nThe.Sopranos.S04E07.1080p.mkv,The Sopranos S4 E7,20") && csv.hasSuffix("\r\n"),
+          "watched list: the spreadsheet quotes commas and quotes, newest first")
+    // A row edited by hand into a date the app doesn't write: kept in a copy, not just dropped
+    let edited = WatchedList.encode(read).replacingOccurrences(of: WatchedList.encode([b]).split(separator: "\n")[4], with: "    \"played\": \"last Tuesday\"")
+    try! Data(edited.utf8).write(to: WatchedList.jsonURL(in: dir))
+    try! WatchedList.add(.init(title: "Heat (1995)", filename: "Heat.1995.mkv", played: t0 + 90_000), in: dir)
+    let copy = (try? String(contentsOf: dir.appendingPathComponent(WatchedList.name + " (unreadable).json"), encoding: .utf8)) ?? ""
+    let after = WatchedList.entries(in: dir)
+    check(copy.contains("last Tuesday") && copy.contains("Amélie") && after.count == 3 && after.last?.title == "Heat (1995)",
+          "watched list: a row that can't be read is kept in a copy beside the list (\(after.count) entries after)")
+    let risky = WatchedList.csv([.init(title: "=HYPERLINK(\"http://x\")", filename: "@file.mkv", played: t0), .init(title: "+1 (2013)", filename: "-30-.mkv", played: t0)])
+    check(risky.contains("\r\n'-30-.mkv,'+1 (2013),") && risky.contains("\r\n'@file.mkv,\"'=HYPERLINK(\"\"http://x\"\")\","),
+          "watched list: a name that starts like a formula is plain text in the spreadsheet")
+    try! Data("not a list".utf8).write(to: WatchedList.jsonURL(in: dir))
+    try! WatchedList.add(a, in: dir)
+    let aside = FileManager.default.fileExists(atPath: dir.appendingPathComponent(WatchedList.name + " (unreadable).json").path)
+    check(aside && WatchedList.entries(in: dir) == [a], "watched list: a JSON file that can't be read is set aside, not written over")
+    try? FileManager.default.removeItem(at: dir)
+}
+
+// A title corrected by hand is the name shown everywhere, and the one looked up
+do {
+    let file = URL(fileURLWithPath: "/tmp/harness-titles/tt0113277.mkv")
+    let before = MediaItem(url: file).displayName
+    TitleOverrides.set(MediaTitle(title: "Heat", year: 1995), for: file)
+    let shown = MediaItem(url: file).displayName
+    let lookedUp = try! await_ { await MetadataLookup.shared.title(for: file) }.get()
+    try! await_ { await MetadataLookup.shared.setTitle(nil, for: file) }.get()
+    let back = MediaItem(url: file).displayName
+    check(before == "Tt0113277" && shown == "Heat (1995)" && lookedUp == MediaTitle(title: "Heat", year: 1995) && back == before,
+          "corrected title: shown in the list and used for the lookup, and undone with the file name (\(before) -> \(shown) -> \(back))")
+}
+
 // Opening a video that is already listed must not list it twice
 do {
     let pl = lib.newPlaylist(named: "harness-dupes")
@@ -459,7 +566,37 @@ let everyday: [(String, String)] = [
     ("Blade.Runner.2049.2017.1080p.BluRay", "Blade Runner 2049 (2017)"),
     ("Inception (2010) [1080p] [YTS.MX]", "Inception (2010)"),
     ("Heat 1995-GRP", "Heat (1995)"),
+    ("Heat [1995]", "Heat (1995)"),
+    ("Dune [1984] [1080p]", "Dune (1984)"),
     ("Show [S01E02]", "Show S1 E2"),
+    // A release tag that is an everyday word ends the title only when tags alone follow it
+    ("Our Extended Family Christmas 2023", "Our Extended Family Christmas (2023)"),
+    ("A Proper Wedding", "A Proper Wedding"),
+    ("The Limited Edition Story", "The Limited Edition Story"),
+    ("The.Extended.Family.S01E02.720p", "The Extended Family S1 E2"),
+    ("Heat.1995.EXTENDED.1080p.BluRay.x264-GRP", "Heat (1995)"),
+    ("Some.Film.Extended.Cut.1080p.BluRay", "Some Film"),
+    ("Some.Film.Criterion.Collection.1080p", "Some Film"),
+    ("Some.Film.PROPER.720p.HDTV", "Some Film"),
+    ("Some Film Unrated", "Some Film"),
+    // Two numbers before a year are a date only when they can be, and no release tags follow
+    ("Fahrenheit.9.11.2004.DVDRip.XviD", "Fahrenheit 9 11 (2004)"),
+    ("Die.Hard.4.0.2007.1080p.BluRay", "Die Hard 4 0 (2007)"),
+    // Two years in a row: the second is when the film came out
+    ("Wonder.Woman.1984.2020.1080p.WEB-DL", "Wonder Woman 1984 (2020)"),
+    ("Death.Race.2000.1975.720p.BluRay", "Death Race 2000 (1975)"),
+    // "Episode 4" with more of the name and then a year is a film; with tags after it, an episode
+    ("Star.Wars.Episode.4.A.New.Hope.1977.1080p.BluRay", "Star Wars Episode 4 A New Hope (1977)"),
+    ("Planet.Earth.Episode.03.2006.1080p.BluRay", "Planet Earth E3"),
+    // A year followed only by the name of a cut is the film's year
+    ("Movie 2010 Directors Cut", "Movie (2010)"),
+    ("Movie 2010 Director's Cut", "Movie (2010)"),
+    ("Blade Runner 1982 The Final Cut", "Blade Runner (1982)"),
+    ("Project 2023 Final", "Project 2023 Final"),
+    // A hyphenated title with its number keeps its hyphen; a slug still becomes words
+    ("Spider-Man-2", "Spider-Man 2"),
+    ("X-Men-2", "X-Men 2"),
+    ("my-video-2", "My Video 2"),
 ]
 check(heat.tvLines(lookedUp: true) == ("Heat", nil) && heat.tvLines(lookedUp: false) == ("Heat (1995)", nil),
       "TV panel: a film found online drops its year, an unknown one keeps it")
@@ -482,6 +619,16 @@ for (sub, expected, why) in releaseCases {
 check(ReleaseMatch.isSameRelease("Heat.2013.1080p.BluRay.x264-GRP", as: "Heat.1995.1080p.BluRay.x264-GRP") == false
       && ReleaseMatch.isSameRelease("Heat.1995.720p.BluRay.x264-GRP", as: "Heat.1995.1080p.BluRay.x264-GRP"),
       "subtitle match: another year's film from the same group isn't a match")
+check(ReleaseMatch.isSameRelease("Aliens.720p.BluRay.x264-GRP", as: "Alien.1080p.BluRay.x264-GRP") == false
+      && ReleaseMatch.isSameRelease("Heat.1995.EXTENDED.720p.BluRay.x264-GRP", as: "Heat.1995.1080p.BluRay.x264-GRP") == false
+      && ReleaseMatch.isSameRelease("Heat.1995.Directors.Cut.720p.BluRay.x264-GRP", as: "Heat.1995.Director's.Cut.1080p.BluRay.x264-GRP"),
+      "subtitle match: another film or another cut from the same group isn't a match")
+check(ReleaseMatch.isSameRelease("The.Sopranos.S04.720p.BluRay.x264-RARBG", as: "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG") == false
+      && ReleaseMatch.isSameRelease("Alien.3.720p.BluRay.x264-GRP", as: "Alien.1080p.BluRay.x264-GRP") == false,
+      "subtitle match: a season's pack or a sequel from the same group isn't a match")
+check(ReleaseMatch.group("Movie.2010.1080p.WEB.H-264") == nil && ReleaseMatch.group("Movie.2010.1080p.BluRay.DTS-ES") == nil
+      && ReleaseMatch.group("Spider-Man") == nil && ReleaseMatch.group("Movie.2010.720p.x264-GRP.pt-BR") == "grp",
+      "release group: a codec, an audio format or a title's own hyphen isn't a group; a region after the language is skipped")
 check(ReleaseMatch.group("Movie.2010.1080p.WEB-DL") == nil && ReleaseMatch.group("Spider-Man.2002.1080p") == nil
       && ReleaseMatch.group("x264-GRP.en") == "grp", "release group: a hyphenated tag or title isn't a group")
 for (file, shown) in everyday {
@@ -502,6 +649,8 @@ let filmChapters: [(Double, String)] = [(0, "Opening Credits"), (3000, "Chapter 
 check((try? MediaProbe.parse(chaptersJSON(filmChapters)))?.creditsStart == 6800.5
       && (try? MediaProbe.parse(chaptersJSON(filmChapters, start: 10)))?.creditsStart == 6790.5,
       "probe: the end credits chapter is found, counted from the film's start")
+check((try? MediaProbe.parse(chaptersJSON(filmChapters + [(7100, "Post-Credits Scene")])))?.creditsStart == 6800.5,
+      "probe: a post-credits scene after the credits doesn't move their start")
 check((try? MediaProbe.parse(chaptersJSON([(10, "Chapter 1"), (6700, "Générique de fin")])))?.creditsStart == 6700
       && (try? MediaProbe.parse(chaptersJSON([(6900, "ABSPANN")])))?.creditsStart == 6900,
       "probe: credits chapters in other languages, any case or accents")
@@ -513,6 +662,9 @@ check((try? MediaProbe.parse(chaptersJSON([(0, "Opening Credits"), (3000, "Chapt
 check(WatchProgress.finishPoint(duration: 7200) == 6912 && WatchProgress.finishPoint(duration: 120) == 108
       && abs(WatchProgress.finishPoint(duration: 3232.1) - (3232.1 - 129.284)) < 0.001,
       "finished: the last 4% is taken as the credits, 30 s at least, a tenth at most")
+check((try? MediaProbe.parse(chaptersJSON([(10, "Chapter 1"), (5000, "The Credit Crunch"), (6000, "Accreditation")])))?.creditsStart == nil
+      && (try? MediaProbe.parse(chaptersJSON([(10, "Chapter 1"), (5000, "The Credit Crunch"), (6900, "End Credit")])))?.creditsStart == 6900,
+      "credits chapter: \"credit\" inside another name isn't the credits")
 check(WatchProgress.finishPoint(duration: 7200, creditsStart: 6800) == 6790
       && WatchProgress.finishPoint(duration: 7200, creditsStart: 100) == 6912
       && WatchProgress.finishPoint(duration: 7200, creditsStart: 7300) == 6912,

@@ -365,6 +365,9 @@ final class StreamSession: @unchecked Sendable {
                                                                           format: intro.format, outputDirectory: dir))
                 self?.setIntroState(.ready)
             } catch {
+                // Without the card the film just starts; the reason is worth keeping (ffmpeg
+                // can't make silent Dolby Digital Plus in 6.1 or 7.1, for one).
+                ErrorLog.record("Poster card", error: error)
                 self?.setIntroState(.failed)
             }
         }

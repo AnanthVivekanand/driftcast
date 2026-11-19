@@ -9,8 +9,9 @@ struct MediaItem: Identifiable, Codable, Hashable {
 
     /// The file's name without its extension: "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG".
     var baseName: String { url.deletingPathExtension().lastPathComponent }
-    /// What the file name says the video is: "The Sopranos", season 4, episode 7.
-    var parsedTitle: MediaTitle { MediaTitle.parse(fileName: baseName) }
+    /// What the video is: "The Sopranos", season 4, episode 7. The title corrected by hand
+    /// when there is one, else what the file name says.
+    var parsedTitle: MediaTitle { TitleOverrides.title(for: url) ?? MediaTitle.parse(fileName: baseName) }
     /// The name shown for the video in lists, windows and on the TV: "The Sopranos S4 E7".
     var displayName: String { parsedTitle.displayName }
     var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
@@ -237,16 +238,20 @@ final class Library: ObservableObject {
     /// and only ever from the right-click menu after the person has confirmed. A trashed file
     /// leaves every playlist it was in, along with its position and watched mark. Files that
     /// couldn't be trashed stay listed and are returned with the reason.
+    ///
+    /// A file listed twice is trashed once. A file that was already deleted or moved in the
+    /// Finder has nothing left to trash, so it just leaves the playlists.
     @discardableResult
     func deleteFiles(_ urls: [URL], trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) -> [(URL, Error)] {
         var failed: [(URL, Error)] = []
         var gone: Set<String> = []
-        for url in urls {
+        var tried: Set<String> = []
+        for url in urls where tried.insert(url.path).inserted {
             do {
                 try trash(url)
                 gone.insert(url.path)
             } catch {
-                failed.append((url, error))
+                if Self.isAlreadyGone(url, error: error) { gone.insert(url.path) } else { failed.append((url, error)) }
             }
         }
         guard !gone.isEmpty else { return failed }
@@ -259,6 +264,18 @@ final class Library: ObservableObject {
         }
         save()
         return failed
+    }
+
+    /// Whether a file that couldn't be trashed is simply not there any more: the system says
+    /// there is no such file, and the folder it was in can be reached. On a disk that isn't
+    /// connected the folder is missing too, and that file stays listed.
+    static func isAlreadyGone(_ url: URL, error: Error) -> Bool {
+        let e = error as NSError
+        let noSuchFile = e.domain == NSCocoaErrorDomain
+            && (e.code == NSFileNoSuchFileError || e.code == NSFileReadNoSuchFileError)
+        let fm = FileManager.default
+        return noSuchFile && !fm.fileExists(atPath: url.path)
+            && fm.fileExists(atPath: url.deletingLastPathComponent().path)
     }
 
     /// Moves videos to the end of another playlist.

@@ -33,8 +33,6 @@ actor MetadataLookup {
     private var artworkMemory: [URL: Data] = [:]
     private var artworkOrder: [URL] = []
     private var nextAllowed: [String: Date] = [:]
-    private var overrides: [String: MediaTitle] = [:]
-    private var overridesLoaded = false
 
     static var isEnabled: Bool { Prefs.bool(Prefs.onlineDetails) }
 
@@ -65,7 +63,6 @@ actor MetadataLookup {
 
     private static var cacheDirectory: URL { directory("Metadata", in: .cachesDirectory) }
     private static var artworkDirectory: URL { directory("Artwork", in: .cachesDirectory) }
-    private static var overridesFile: URL { directory("", in: .applicationSupportDirectory).appendingPathComponent("title-overrides.json") }
 
     private static func hash(_ s: String) -> String {
         String(SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined().prefix(32))
@@ -79,24 +76,12 @@ actor MetadataLookup {
 
     /// What the file is about: the title the person corrected by hand, else what the file name says.
     func title(for url: URL) -> MediaTitle {
-        loadOverrides()
-        return overrides[url.path] ?? MediaTitle.parse(fileName: url.deletingPathExtension().lastPathComponent)
+        TitleOverrides.title(for: url) ?? MediaTitle.parse(fileName: url.deletingPathExtension().lastPathComponent)
     }
 
     /// Remembers a corrected title for a file (nil goes back to the file name).
     func setTitle(_ title: MediaTitle?, for url: URL) {
-        loadOverrides()
-        overrides[url.path] = title
-        if let data = try? JSONEncoder().encode(overrides) { try? data.write(to: Self.overridesFile, options: .atomic) }
-    }
-
-    private func loadOverrides() {
-        guard !overridesLoaded else { return }
-        overridesLoaded = true
-        if let data = try? Data(contentsOf: Self.overridesFile),
-           let stored = try? JSONDecoder().decode([String: MediaTitle].self, from: data) {
-            overrides = stored
-        }
+        TitleOverrides.set(title, for: url)
     }
 
     // MARK: Details

@@ -162,6 +162,7 @@ struct SubtitleSearchView: View {
                 needsKey = true
                 keyProblem = "OpenSubtitles didn't accept that key. Check it and try again."
             } catch {
+                ErrorLog.record("Subtitle search", item.url.lastPathComponent, error: error)
                 message = error.localizedDescription
             }
         }
@@ -179,6 +180,7 @@ struct SubtitleSearchView: View {
                 player.addSubtitleFile(file, to: item)
                 dismiss()
             } catch {
+                ErrorLog.record("Subtitle download", item.url.lastPathComponent, error: error)
                 message = error.localizedDescription
             }
         }

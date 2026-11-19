@@ -71,6 +71,11 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
         for marker in episodeMarkers {
             guard let m = marker.firstMatch(in: s, range: whole), m.range.location > 0,
                   let range = Range(m.range, in: s) else { continue }
+            // "Star Wars Episode 4 A New Hope 1977" is a film: "Episode 4" with no season, then
+            // more of the name, then the year it came out.
+            if m.numberOfRanges == 2, let (_, year) = filmYear(in: s), year.lowerBound >= range.upperBound,
+               let next = s[range.upperBound..<year.lowerBound].split(separator: " ").first,
+               next.contains(where: \.isLetter), !isReleaseTag(next) { continue }
             func number(_ i: Int) -> Int? { Range(m.range(at: i), in: s).flatMap { Int(s[$0]) } }
             let season = m.numberOfRanges == 3 ? number(1) : nil
             let episode = m.numberOfRanges == 3 ? number(2) : number(1)
@@ -101,27 +106,60 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
         for m in yearPattern.matches(in: s, range: NSRange(s.startIndex..., in: s)) where m.range.location > 0 {
             guard let range = Range(m.range, in: s), let year = Int(s[range]), year <= latest else { continue }
             let before = String(s[..<range.lowerBound]), after = String(s[range.upperBound...])
-            let isDate = after.range(of: #"^[-\s]\d{1,2}[-\s]\d{1,2}\b"#, options: .regularExpression) != nil
-                || before.range(of: #"\b\d{1,2}[-\s]\d{1,2}[-\s]$"#, options: .regularExpression) != nil
-            if isDate { continue }
-            if before.last == "(" || before.last == "[" { return (year, range) }
             let rest = after.trimmingCharacters(in: CharacterSet(charactersIn: " )]"))
+            let tagged = rest.split(separator: " ").contains(where: isReleaseTag)
+            // "12 05 2023" is a day and a month before their year. Not when the numbers can't
+            // be ("Die Hard 4 0 2007"), nor when release tags follow, as they follow a film's
+            // year ("Fahrenheit 9 11 2004 DVDRip").
+            let isDate = after.range(of: #"^[-\s]\d{1,2}[-\s]\d{1,2}\b"#, options: .regularExpression) != nil
+                || (endsWithDayAndMonth(before) && !tagged)
+            if isDate { continue }
+            // "Wonder Woman 1984 2020": a year straight after this one is when the film came
+            // out, and this one is part of its name.
+            if let next = rest.split(separator: " ").first, next.count == 4, let following = Int(next),
+               (1920...latest).contains(following), after.hasPrefix(" ") { continue }
+            if before.last == "(" || before.last == "[" { return (year, range) }
             let onlyGroup = rest.hasPrefix("-") && !rest.contains(" ")   // "Heat 1995-GRP"
-            if rest.isEmpty || onlyGroup || rest.split(separator: " ").contains(where: isReleaseTag) {
+            if rest.isEmpty || onlyGroup || tagged || isCutName(rest) {
                 return (year, range)
             }
         }
         return nil
     }
 
+    /// "Directors Cut", "The Final Cut", "Special Edition": words after a year that name a cut
+    /// of the film and nothing else. A cut's noun must be among them, so "Project 2023 Final"
+    /// keeps its name.
+    private static func isCutName(_ text: String) -> Bool {
+        let words = text.lowercased().split(separator: " ")
+            .map { $0.filter { $0.isLetter || $0.isNumber } }.filter { !$0.isEmpty }
+        let describing: Set<String> = ["the", "directors", "director", "s", "theatrical", "final", "special", "uncut",
+                                       "redux", "ultimate", "anniversary"]
+        return words.contains(where: cutNouns.contains)
+            && words.allSatisfy { cutNouns.contains($0) || everydayTags.contains($0) || describing.contains($0) }
+    }
+
+    private static let dayAndMonth = try! NSRegularExpression(pattern: #"\b(\d{1,2})[-\s](\d{1,2})[-\s]$"#)
+
+    /// Whether the text ends in two numbers that can be a day and a month, in either order.
+    private static func endsWithDayAndMonth(_ text: String) -> Bool {
+        guard let m = dayAndMonth.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let a = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
+              let b = Range(m.range(at: 2), in: text).flatMap({ Int(text[$0]) }) else { return false }
+        return (1...31).contains(a) && (1...31).contains(b) && min(a, b) <= 12
+    }
+
     /// Square-bracketed tags at the end of a name say nothing about the video: a download's
-    /// video id ("[dQw4w9WgXcQ]"), a release site ("[YTS.MX]"), a quality ("[1080p]").
+    /// video id ("[dQw4w9WgXcQ]"), a release site ("[YTS.MX]"), a quality ("[1080p]"). A year
+    /// ("Heat [1995]") does, and stays for `filmYear` to read.
     private static func withoutTrailingTags(_ name: String) -> String {
         var s = name
         while let r = s.range(of: #"\s*\[[^\[\]]*\]\s*$"#, options: .regularExpression) {
             let inside = SeriesName.normalize(String(s[r]).trimmingCharacters(in: CharacterSet(charactersIn: " []")))
             let marksEpisode = episodeMarkers.contains { $0.firstMatch(in: inside, range: NSRange(inside.startIndex..., in: inside)) != nil }
-            guard s[..<r.lowerBound].contains(where: \.isLetter), !marksEpisode else { break }
+            let whole = NSRange(inside.startIndex..., in: inside)
+            let isYear = yearPattern.firstMatch(in: inside, range: whole)?.range == whole
+            guard s[..<r.lowerBound].contains(where: \.isLetter), !marksEpisode, !isYear else { break }
             s.removeSubrange(r)
         }
         return s
@@ -132,6 +170,12 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
     private static func wordsFromSlug(_ name: String) -> String {
         guard !name.contains(where: { $0 == " " || $0 == "." || $0 == "_" }),
               name.filter({ $0 == "-" }).count >= 2 else { return name }
+        // "Spider-Man-2", "X-Men-2": a hyphenated title and its number, not words joined by hyphens.
+        let parts = name.split(separator: "-", omittingEmptySubsequences: false)
+        if parts.count == 3, (1...2).contains(parts[2].count), parts[2].allSatisfy(\.isNumber),
+           parts[0].first?.isUppercase == true, parts[1].first?.isUppercase == true {
+            return "\(parts[0])-\(parts[1]) \(parts[2])"
+        }
         return name.replacingOccurrences(of: #"(?<=[A-Za-z])-|-(?=[A-Za-z])"#, with: " ", options: .regularExpression)
     }
 
@@ -150,21 +194,51 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
         return SeriesName.normalize(s).replacingOccurrences(of: String(keep), with: ".")
     }
 
-    /// The words before the first release tag ("Heat 1080p BluRay" -> "Heat").
+    /// Release tags that are everyday words too, and so turn up in titles.
+    private static let everydayTags: Set<String> = [
+        "proper", "repack", "internal", "limited", "extended", "unrated", "remastered", "hybrid", "criterion",
+        "multi", "dolby", "atmos",
+    ]
+    /// What such a word is followed by when it names a cut: "Extended Cut", "Limited Edition",
+    /// "Criterion Collection".
+    private static let cutNouns: Set<String> = ["cut", "edition", "version", "collection", "release"]
+
+    /// The words before the first release tag ("Heat 1080p BluRay" -> "Heat"). A tag that is an
+    /// everyday word ends the title only when nothing but tags follows it: "Heat Extended Cut
+    /// 1080p" is Heat, and "Our Extended Family Christmas" keeps its whole name.
     static func cutAtReleaseTag(_ text: String) -> String {
+        let words = text.split(separator: " ")
         var kept: [Substring] = []
-        for word in text.split(separator: " ") {
-            if isReleaseTag(word), !kept.isEmpty { break }
+        for (i, word) in words.enumerated() {
+            if !kept.isEmpty, isReleaseTag(word), !isEverydayTag(word) || onlyTagsFollow(words[(i + 1)...]) { break }
             kept.append(word)
         }
         return kept.joined(separator: " ")
     }
 
+    private static func tagForms(_ word: Substring) -> (bare: String, beforeGroup: String) {
+        let bare = word.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[](){}-"))
+        return (bare, bare.split(separator: "-").first.map(String.init) ?? bare)
+    }
+
+    private static func isEverydayTag(_ word: Substring) -> Bool {
+        let (bare, beforeGroup) = tagForms(word)
+        return everydayTags.contains(bare) || everydayTags.contains(beforeGroup)
+    }
+
+    /// True when the words up to the next unmistakable tag, or to the end, are all tag words.
+    private static func onlyTagsFollow(_ rest: ArraySlice<Substring>) -> Bool {
+        for word in rest {
+            if isEverydayTag(word) || cutNouns.contains(tagForms(word).bare) { continue }
+            return isReleaseTag(word)
+        }
+        return true
+    }
+
     /// A word of a release name that isn't the title: "1080p", "BluRay", a tag joined to the
     /// release group by a hyphen ("x265-RARBG"), a frame rate ("60fps"), a picture size ("1920x1080").
     static func isReleaseTag(_ word: Substring) -> Bool {
-        let bare = word.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[](){}-"))
-        let beforeGroup = bare.split(separator: "-").first.map(String.init) ?? bare
+        let (bare, beforeGroup) = tagForms(word)
         if releaseTags.contains(bare) || releaseTags.contains(beforeGroup) { return true }
         return beforeGroup.range(of: #"^(\d{2,3}fps|\d{3,4}x\d{3,4})$"#, options: .regularExpression) != nil
     }

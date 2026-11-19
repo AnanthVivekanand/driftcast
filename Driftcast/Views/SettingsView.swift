@@ -24,6 +24,7 @@ private struct GeneralSettings: View {
     @AppStorage(Prefs.onlineDetails) private var onlineDetails = true
     @AppStorage(Prefs.omdbKey) private var omdbKey = ""
     @AppStorage(Prefs.titleCard) private var titleCard = true
+    @AppStorage(Prefs.watchedList) private var watchedList = true
     @ObservedObject private var updater = Updater.shared
     @State private var version: String?
 
@@ -32,6 +33,12 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Resume videos where you left off", isOn: $resume)
                 Toggle("Play the next video in the playlist automatically", isOn: $autoNext)
+            }
+            Section {
+                Toggle("Keep a list of the videos you watch", isOn: $watchedList)
+                Button("Show in Finder") { WatchedList.reveal() }
+            } footer: {
+                Text("Each video you play is added to “\(WatchedList.name)” in your Movies folder, with the same list as a JSON file next to it. File > Export Watched Videos saves it as a spreadsheet.")
             }
             Section {
                 Toggle("Look up posters and details online", isOn: $onlineDetails)

@@ -329,7 +329,12 @@ struct DetailsView: View {
                     }
                     HStack {
                         Button("Use File Name") {
-                            Task { await MetadataLookup.shared.setTitle(nil, for: item.url); correcting = false; await load(item) }
+                            Task {
+                                await MetadataLookup.shared.setTitle(nil, for: item.url)
+                                library.objectWillChange.send()   // the list shows the name too
+                                correcting = false
+                                await load(item)
+                            }
                         }
                         Spacer()
                         Button("Cancel") { correcting = false }
@@ -398,6 +403,7 @@ struct DetailsView: View {
         corrected.season = parsed?.season
         corrected.episode = parsed?.episode
         await MetadataLookup.shared.setTitle(corrected, for: item.url)
+        library.objectWillChange.send()   // the list shows the name too
         correcting = false
         details = nil; poster = nil; still = nil
         parsed = corrected

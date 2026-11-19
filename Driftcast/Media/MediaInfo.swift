@@ -313,23 +313,33 @@ actor MediaProbe {
                                                     startTime: startTime, duration: duration))
     }
 
-    /// The start of the last chapter named for the credits, if it's in the second half: an
-    /// "Opening Credits" chapter near the start isn't the end.
+    /// The start of the first chapter named for the credits in the second half: an "Opening
+    /// Credits" chapter near the start isn't the end, and a "Post-Credits Scene" chapter comes
+    /// after the credits have begun.
     static func creditsStart(_ chapters: [[String: Any]], startTime: Double, duration: Double) -> Double? {
-        let credits = chapters.last { chapter in
+        for chapter in chapters {
             let tags = chapter["tags"] as? [String: Any] ?? [:]
             let title = ((tags["title"] ?? tags["TITLE"]) as? String ?? "")
                 .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-            return creditsWords.contains { title.contains($0) }
+            guard isCreditsTitle(title),
+                  let start = Double(chapter["start_time"] as? String ?? "") else { continue }
+            let at = start - startTime
+            if at > duration / 2 && at < duration { return at }
         }
-        guard let start = credits.flatMap({ Double($0["start_time"] as? String ?? "") }) else { return nil }
-        let at = start - startTime
-        return at > duration / 2 && at < duration ? at : nil
+        return nil
     }
 
     /// Chapter names for end credits, compared after folding case and accents.
-    private static let creditsWords = ["credit", "end title", "closing title", "abspann", "generique", "titoli di coda",
+    private static let creditsWords = ["end title", "closing title", "abspann", "generique", "titoli di coda",
                                        "aftiteling", "eftertext", "rulletekst", "lopputekst", "титры"]
+
+    /// "Credits" as a word of its own, or "End Credit": not "Credit Crunch" or "Accreditation".
+    static func isCreditsTitle(_ folded: String) -> Bool {
+        let words = folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        if words.contains("credits") { return true }
+        if words.contains("credit"), words.contains(where: ["end", "closing", "final", "roll"].contains) { return true }
+        return creditsWords.contains { folded.contains($0) }
+    }
 
     private static func parseRate(_ s: String?) -> Double? {
         guard let s else { return nil }

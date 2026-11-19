@@ -78,6 +78,7 @@ final class AVPlayerTarget: PlaybackTarget {
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.player.currentItem === item,
                   let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                  !Task.isCancelled, self.player.currentItem === item,   // again: the load took a moment
                   let chosen = item.currentMediaSelection.selectedMediaOption(in: group) else { return }
             item.select(nil, in: group)
             item.select(chosen, in: group)

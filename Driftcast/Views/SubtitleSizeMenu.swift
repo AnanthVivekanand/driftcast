@@ -139,16 +139,18 @@ final class SubtitleSizeMenuItem {
     }
 
     /// Puts the header and slider into the Subtitles menu, after the Smaller Subtitles item,
-    /// unless they are already there.
+    /// unless they are already in that place. (They can be in the menu but out of place: while
+    /// AirPlaying there is no Smaller Subtitles item, and it comes back when AirPlay ends.)
     private func insertIfNeeded() {
         guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == "Subtitles" })?.submenu else { return }
         refresh()
-        if menu.items.contains(where: { $0 === item }), menu.items.contains(where: { $0 === header }) { return }
+        let others = menu.items.filter { $0 !== item && $0 !== header }
+        let anchor = others.firstIndex { $0.title == "Smaller Subtitles" }.map { $0 + 1 }
+            ?? others.firstIndex { $0.title == "Subtitle Settings…" }
+            ?? others.count
+        if menu.items.count > anchor + 1, menu.items[anchor] === header, menu.items[anchor + 1] === item { return }
         header.menu?.removeItem(header)
         item.menu?.removeItem(item)
-        let anchor = menu.items.firstIndex { $0.title == "Smaller Subtitles" }.map { $0 + 1 }
-            ?? menu.items.firstIndex { $0.title == "Subtitle Settings…" }
-            ?? menu.items.count
         menu.insertItem(header, at: anchor)
         menu.insertItem(item, at: anchor + 1)
     }

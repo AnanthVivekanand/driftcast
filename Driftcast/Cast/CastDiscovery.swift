@@ -79,7 +79,9 @@ final class CastDiscovery: ObservableObject {
             Task { @MainActor in
                 switch state {
                 case .ready: self?.isBrowsing = true; self?.problem = nil
-                case .failed(let e): self?.isBrowsing = false; self?.problem = e.localizedDescription
+                case .failed(let e):
+                    ErrorLog.record("Chromecast search", error: e)
+                    self?.isBrowsing = false; self?.problem = e.localizedDescription
                 case .waiting(let e): self?.problem = e.localizedDescription
                 default: break
                 }

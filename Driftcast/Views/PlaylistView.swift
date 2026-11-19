@@ -97,6 +97,7 @@ struct PlaylistView: View {
         let failed = library.deleteFiles(items.map(\.url))
         selection.subtract(items.map(\.id))
         if !failed.isEmpty {
+            failed.forEach { ErrorLog.record("Delete File", $0.0.path, error: $0.1) }
             deleteProblem = failed.map { "\($0.0.lastPathComponent): \($0.1.localizedDescription)" }.joined(separator: "\n")
         }
     }

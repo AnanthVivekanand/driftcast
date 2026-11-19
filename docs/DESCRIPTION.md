@@ -9,9 +9,10 @@ your Mac on a Chromecast, an Apple TV or an AirPlay 2 TV, and on the Mac itself.
 only what the device can't play, while the video is playing, so nearly any file plays on nearly
 any device without waiting and without quality loss where none is needed.
 
-This document describes version 1.0.1 as of 17 November 2026. It is written from
+This document describes version 1.1.1 as of 19 November 2026. It is written from
 the source code, so every statement below corresponds to something the code does. Where a
-feature has not been tried on real hardware, it says so.
+feature has not been tried on real hardware, it says so. What changed since version 1.1 is
+marked "(new in 1.1.1)".
 
 ---
 
@@ -30,7 +31,9 @@ feature has not been tried on real hardware, it says so.
   controls, picture-in-picture and full screen.
 - Finds Chromecasts automatically by Bonjour, tells screens from speakers by the device's own
   capability flags, and reconnects after a Wi-Fi dropout (three attempts over about twelve
-  seconds), resuming where it was.
+  seconds), resuming where it was. When five seconds of searching find none, the list says
+  "None found on this network" rather than searching on; a Chromecast that turns on later
+  still appears as soon as it answers.
 - Shows the video's poster frame on the Chromecast while it loads and when paused.
 - Warns when an AirPlay TV has connected but cannot fetch the video from the Mac (firewall,
   VPN or different networks), with a button to the Network settings.
@@ -78,9 +81,9 @@ feature has not been tried on real hardware, it says so.
   stereo AAC or Opus, as chosen in Settings.
 - Several audio tracks: choose any track in the file; the preferred language is picked
   automatically.
-- **Volume booster** (dynamic range normaliser plus a limiter), **downmix to stereo**, and an
+- **Volume booster** (dynamic range normalizer plus a limiter), **downmix to stereo**, and an
   **audio delay** adjustable from −2 s to +2 s in 0.05 s steps, each applied in the conversion.
-- Honours each device's published limits: the original Chromecasts get at most 1080p at 30
+- Honors each device's published limits: the original Chromecasts get at most 1080p at 30
   frames per second (720p above that) and H.264 level 4.1; Nest Hubs get 720p; Chromecast HD
   gets 1080p with HEVC and HDR; Ultra, Google TV and TVs with Cast built in get 4K, HEVC, VP9
   and HDR; only the Google TV Streamer gets AV1.
@@ -116,6 +119,23 @@ feature has not been tried on real hardware, it says so.
 - A free **OMDb key** (Settings > General) adds IMDb, Rotten Tomatoes and Metacritic ratings
   for films Wikidata hasn't scored and for episodes, plus writers and cast, and is used first
   when present. The app can also ship with a built-in key.
+- **Clean names everywhere:** a video is shown by what it is, not its release name:
+  "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG" reads "The Sopranos S4 E7" and
+  "Heat.1995.1080p.BluRay.x264-GRP" reads "Heat (1995)", without the dots, quality, encoding,
+  release group or extension. When space runs short only the name is shortened ("The Sopr…
+  S4 E7"), so the episode number or year stays readable. Everyday files are tidied the same
+  way where possible: square-bracketed tags at the end ("[dQw4w9WgXcQ]", "[1080p]") and
+  hyphens used as spaces go; the dots of a time or date stay ("at 10.30.15", "2024.01.02");
+  and a number counts as a film's year only in brackets, at the end of the name or before
+  release tags, never inside a date or in the future ("Blade Runner 2049" keeps its number).
+  The same name goes to the title card, the Chromecast and the Now Playing panel. New in 1.1.1:
+  a release word that is also an everyday word ("Extended", "Proper", "Limited") ends the
+  name only when nothing but tags follows it, so "Our Extended Family Christmas" keeps its
+  name; of two years in a row the second is the film's ("Wonder Woman 1984 (2020)"); "Heat
+  [1995]" keeps its year; a year followed only by the name of a cut is the film's ("Movie 2010
+  Directors Cut" is Movie (2010)); "Star Wars Episode 4 A New Hope 1977" is a film, not
+  episode 4 of a show; "Spider-Man-2" reads "Spider-Man 2"; and a title corrected by hand is
+  the name shown everywhere.
 - Titles are read from file names: "Heat.1995.1080p.BluRay.x264" is Heat (1995);
   "Sopranos.S1.E11", "Show.S02E05", "Series 3x07" and "Episode 4" are episodes. A result must
   match the title (and the year, when both are known) or it is not shown. "Not this title?
@@ -124,9 +144,10 @@ feature has not been tried on real hardware, it says so.
 - Rows look up their details as soon as they appear. A video played the moment it is added
   waits up to six seconds for that lookup, so the title card and the Chromecast's screen get
   the real poster rather than a frame; the lookup carries on in the background either way.
-- Playlist rows show the year and the first rating ("1995 · IMDb 8.3") or the episode number
-  and name; the Chromecast shows the poster, with the film's year and director or the
-  episode's show, number and name, on its loading and pause screens.
+- Playlist rows show the year and the first rating ("1995 · IMDb 8.3") or, for an episode,
+  its name (the number is already in the title line); the Chromecast shows the poster, with
+  the film's year and director or the episode's show, number and name, on its loading and
+  pause screens.
 - **A title card when a video starts** (switchable): five seconds of the
   poster beside the title, year, running time, age rating, genres, director, cast and
   ratings, fading in and out. On this Mac and AirPlay it is a short clip stitched in front
@@ -151,7 +172,7 @@ feature has not been tried on real hardware, it says so.
 - Any subtitle file can be added by hand (SRT, ASS, VTT, SUP, IDX/SUB); it is remembered for
   that video.
 - **Picture subtitles become text:** Blu-ray PGS and DVD VobSub subtitles inside an MKV, or as
-  `.sup` and `.idx` files, are read with the Vision text recogniser (the vendored macSubtitleOCR
+  `.sup` and `.idx` files, are read with the Vision text recognizer (the vendored macSubtitleOCR
   code) the first time they are used and cached as SRT, so an HEVC film with PGS subtitles plays
   without converting the video. This can be turned off, in which case they are drawn into the
   picture during conversion.
@@ -164,7 +185,7 @@ feature has not been tried on real hardware, it says so.
   starts — fingerprint first, then title (season and episode for a show) — and the best match
   is downloaded, kept with the video and turned on; this takes a few seconds and is tried once
   per video per run.
-- **While casting** the video window shrinks to half its size and shows the video under a grey
+- **While casting** the video window shrinks to half its size and shows the video under a gray
   veil with a big streaming mark and "Connected to <device>, streaming video…". The picture is
   a silent copy that follows the device's position (the poster stands in until it has a
   picture), and the window keeps only play/pause and the timeline, which moves the position on
@@ -176,12 +197,20 @@ feature has not been tried on real hardware, it says so.
 - **Subtitle size** is one setting from 60% to 200%, remembered between launches: a slider in
   the menu bar's Subtitles menu (with Larger ⌥⌘= and Smaller ⌥⌘− above it), a Subtitle Size
   submenu with the same steps and presets in the playback bar's and the video window's
-  subtitle menus, and the slider in Settings. A change applies at once: this Mac redraws its
-  subtitles at that size, and a Chromecast is told the new text style without reloading the
-  video (white text with a black outline). An AirPlay TV draws subtitles with its own settings.
-- **OpenSubtitles.com search** built in: searches by the file's hash (exact-release matches are
-  marked) and by title, shows language, download count and hearing-impaired marks, downloads
-  as SRT and turns the subtitle on. Needs a free API key from OpenSubtitles unless the app ships
+  subtitle menus, and the slider in Settings. A change applies at once: this Mac redraws the
+  line already on screen at the new size (the player otherwise applies a new size only from
+  the next line), and a Chromecast is told the new text style without reloading the video
+  (white text with a black outline). An AirPlay TV draws subtitles with its own caption
+  settings and ignores the size, so while AirPlaying the size controls are hidden from the
+  menus and a line in their place says to change it in the TV's caption settings; the
+  Settings slider stays.
+- **OpenSubtitles.com search** built in: searches by the file's hash and by title, shows
+  language, download count and hearing-impaired marks, downloads as SRT and turns the subtitle
+  on. Results made for this video are tagged and listed first: **EXACT** when OpenSubtitles
+  matched the file's hash, **MATCH** when the subtitle's release name is the file's own or
+  comes from the same release group and source (and names no other year or episode; in
+  1.1.1 also no other film or cut, and not a whole season's pack). The
+  automatic search therefore downloads a matching subtitle first. Needs a free API key from OpenSubtitles unless the app ships
   with one. "How to get one…" in the details panel (and the same item in its captions menu)
   opens the steps: create an account and confirm it by email, open the API Consumers page,
   save a new consumer, paste the key into the box there (it is the same box as in Settings).
@@ -190,16 +219,19 @@ feature has not been tried on real hardware, it says so.
 
 ### Playlists and library
 - Any number of named playlists in a sidebar; rename, delete, add videos or folders to each.
-- Drag files or folders into the window, the sidebar, or onto the Dock icon; use the + button,
-  File > Add Videos… or "Open With" from the Finder. Folders are searched recursively and
+- Drag files or folders into the window, the sidebar, or onto the Dock icon; use the + button
+  beside the playlist's name, File > Add Videos… or "Open With" from the Finder. Folders are searched recursively and
   sorted the way the Finder sorts.
 - **Show playlists:** dropping two or more episodes of one show (`Sopranos.S1.E11.mp4`,
   `Show.S02E05.mkv`, `Series 3x07`, `Episode 4`, names that differ only by a number) creates a
   playlist named after the show, in episode order, or adds to an existing one without
   duplicates. An unrelated film in the same drop stays where it was dropped.
-- Each row shows a poster frame, the title, a progress bar of how much has been watched, the
-  stream summary (codec, resolution, HDR, audio, track and subtitle counts), the time left, and
-  the duration. Finished videos are greyed out with a checkmark.
+- Each row shows a poster frame, the cleaned name, the time left, the stream summary (codec,
+  resolution, HDR, audio, track and subtitle counts), and on the right the duration with a bar
+  under it of how much has been watched. The bars form one column down the list: blue while
+  there is more to watch, green once the video is finished. A video counts as finished where
+  its end credits start; its row then says "Finished" instead of the time left and is faded,
+  with a checkmark.
 - Resume where you left off (positions saved every five seconds and on quit); "Play from
   Beginning" clears the position; mark videos watched or unwatched by hand.
 - Autoplay of the next video in the playlist; Next and Previous buttons and shortcuts.
@@ -209,6 +241,13 @@ feature has not been tried on real hardware, it says so.
   menu. Missing files are flagged.
 - The library is a JSON file in Application Support, written after every change and again on
   quit.
+- **A list of the videos you watch** (new in 1.1.1): each video that starts playing is added to
+  "Videos I have watched on Driftcast" in your Movies folder, with its file name, its cleaned
+  name and when it was played, newest first. The same list sits under it as a JSON file
+  (`filename`, `title`, `played`), and File > Export Watched Videos… saves it as a CSV
+  spreadsheet with the same three columns in that order.
+  Starting the same video again within 30 minutes counts as the same viewing. It can be
+  turned off in Settings > General.
 
 ### Playback controls
 - Transport bar with Previous, back 10 s, Play/Pause, forward 10 s, Next, Stop, audio-track
@@ -225,9 +264,10 @@ feature has not been tried on real hardware, it says so.
   rather than going on as sound alone. Play opens the window again.
 
 ### Menus and shortcuts
-- **Driftcast:** About Driftcast (the full description, requirements, licence and website),
+- **Driftcast:** About Driftcast (the full description, requirements, license and website),
   Check for Updates… (also a button in the About window), Settings…
-- **File:** Add Videos… (⌘O), New Playlist (⇧⌘N), Details (⌘I), Show in Finder (⇧⌘R).
+- **File:** Add Videos… (⌘O), New Playlist (⇧⌘N), Details (⌘I), Show in Finder (⇧⌘R), Export
+  Watched Videos… (new in 1.1.1).
 - **View:** Show Details (⌥⌘I), plus the standard sidebar and toolbar items.
 - **Playback:** Play/Pause (⌘P), Stop (⌘.), Skip Forward/Back 10 Seconds (⌥→ / ⌥←), Skip
   Forward/Back 1 Minute (⌥⇧→ / ⌥⇧←), Next/Previous Video (⇧⌘→ / ⇧⌘←), Volume Up/Down (↑ / ↓),
@@ -236,22 +276,26 @@ feature has not been tried on real hardware, it says so.
 - **Output:** This Mac, Apple TV or AirPlay TV…, every Chromecast found (speakers in a
   submenu), Disconnect from Chromecast, Search for Devices Again.
 - **Subtitles:** Off, every subtitle track and file, Add Subtitle File…, Find Subtitles
-  Online…, Larger Subtitles (⌥⌘=), Smaller Subtitles (⌥⌘−), the Subtitle Size slider, Get a
-  Free OpenSubtitles API Key…, Enter API Key…, Subtitle Settings…
+  Online…, Larger Subtitles (⌥⌘=), Smaller Subtitles (⌥⌘−), the Subtitle Size slider (these
+  three are hidden while AirPlaying), Get a Free OpenSubtitles API Key…, Enter API Key…,
+  Subtitle Settings…
 - **Help:** Driftcast Help, Report a Problem…, Driftcast on GitHub,
-  Driftcast Website.
+  Driftcast Website, Show Error Log (new in 1.1.1).
 - **Right-click on a video:** Play / Resume from 12:34 / Pause / Stop, Play from Beginning, Add
   Subtitle File…, Find Subtitles Online…, Details, Show in Finder, Mark as Watched /
   Unwatched, Move to Playlist (any playlist or a new one), Add Videos…, Remove from Playlist,
   Delete File… (asks "Do you really want to delete this file?", then moves the file to the
   Trash, stops it if it is playing, and takes it out of every playlist; the only command in
-  the app that touches a file on disk).
+  the app that touches a file on disk). New in 1.1.1: a file listed twice is moved once, and a
+  file already deleted in the Finder just leaves the playlists. A file that can't be moved
+  stays listed, with the system's reason shown and written to the error log.
 - **Right-click on a playlist:** Rename, Add Videos…, Delete Playlist.
 - In the list: Space plays or pauses, Return plays the selected video, Delete removes it from
   the playlist (the file stays).
 
 ### Settings
-- **General:** resume where you left off; play the next video automatically; look up posters
+- **General:** resume where you left off; play the next video automatically; keep a list of
+  the videos you watch, with Show in Finder (new in 1.1.1); look up posters
   and details online, OMDb API key, show the poster and details for five seconds when a video starts;
   which ffmpeg to use (the built-in copy, or a folder of your
   own); check for updates automatically, last check, Check Now.
@@ -267,13 +311,13 @@ feature has not been tried on real hardware, it says so.
 - Changing a conversion setting while a video plays re-plans and restarts the stream at the
   same position a second later.
 
-### Updates, about, licence
+### Updates, about, license
 - Checks the project's GitHub releases at launch and every eight hours (switchable) and offers
   a new version in a dialog ("Update version X available"): Update Now (downloads it, checks it is signed by Leech Software, closes and reopens as the new version), Remind Me Later, Skip This Version.
 - About window with the version, "by Leech Software" linking to leechsoftware.com, how it
   works, what it plays, what you need, tips, the freeware statement, copyright, trademarks, and
-  buttons for the licence and acknowledgements.
-- Freeware: no trial, no time limit, no licence key, no account, no ads, no analytics.
+  buttons for the license and acknowledgements.
+- Freeware: no trial, no time limit, no license key, no account, no ads, no analytics.
 - Open source under the GNU General Public License v3; FFmpeg (GPL) and macSubtitleOCR (MIT)
   are credited in `NOTICE.md`, which is also inside the app.
 - Universal app (Apple silicon and Intel), Developer ID signed and notarized, macOS 13 Ventura
@@ -283,6 +327,15 @@ feature has not been tried on real hardware, it says so.
 - Every request a device makes to the built-in server and every player event is logged to the
   unified log (subsystem `com.leechsoftware.driftcast`), readable in Console or with
   `/usr/bin/log stream`.
+- **Error log** (new in 1.1.1): each failure is written as one line to
+  `~/Library/Logs/Driftcast/Errors.log` with the time, the version, what was being done, the
+  file, the system's reason and its error numbers. Logged: a video that won't start or stops
+  with an error, a TV that connects over AirPlay but never asks for the video, a file that
+  can't be moved to the Trash, a failed subtitle search or download, a failed update, a failed
+  Chromecast search, a poster card that couldn't be made (ffmpeg can't make one for Dolby
+  Digital Plus in 6.1 or 7.1; the film plays without it), and a watched list that can't be
+  written. Help > Show Error Log shows the
+  file in the Finder. Past 512 KB the older half is dropped.
 - The details panel's File section shows a file's streams and, for the current output
   device, exactly what would be passed through, converted or drawn in, and why.
 - The audio adjustments popover shows the same "Stream" notes for the playing video.
@@ -294,9 +347,10 @@ feature has not been tried on real hardware, it says so.
 1. **You pick a video** (double-click, Return, the right-click menu, or autoplay). Driftcast
    saves the previous video's position, then probes the file with `ffprobe` (JSON output,
    cached per file): duration, container, bit rate, the video stream (codec, profile, level,
-   pixel format, size, frame rate, colour transfer, Dolby Vision side data), every audio stream
-   (codec, profile, channels, language, title, default flag) and every supported subtitle
-   stream (codec, language, title, default and forced flags).
+   pixel format, size, frame rate, color transfer, Dolby Vision side data), every audio stream
+   (codec, profile, channels, language, title, default flag), every supported subtitle
+   stream (codec, language, title, default and forced flags), the title written into the file,
+   and the chapters, from which the start of the end credits is taken.
 
 2. **Tracks are chosen.** The audio track is the first one in your preferred language (default
    track first), else the file's default track. The subtitle is none, unless "Always turn on
@@ -321,8 +375,10 @@ feature has not been tried on real hardware, it says so.
      extension is one the device opens natively, nothing is converted, no picture subtitle is
      drawn in, there is no audio delay, the chosen audio track is the first one (devices
      always play the first), the device isn't a speaker, and, for Apple devices, there is no
-     text subtitle (AVPlayer can't side-load one) and HEVC is tagged `hvc1`. Everything else
-     goes through HLS.
+     text subtitle (AVPlayer can't side-load one) and HEVC is tagged `hvc1`. A local file
+     whose own title tag differs from its cleaned name (release files often carry the release
+     name there) is repackaged instead, since a TV reading the file shows that tag; the HLS
+     output carries no tags. Everything else goes through HLS.
    - The plan carries human-readable notes ("Video: HEVC 4K HDR10, sent untouched", "Audio:
      DTS 5.1 converted to Dolby Digital Plus 5.1 (DTS isn't supported)"), shown in Media Info
      and the adjustments popover.
@@ -366,8 +422,8 @@ feature has not been tried on real hardware, it says so.
    decode time (`tfdt`) and blanking `sidx` boxes (`MP4Boxes.rebase`).
 
 10. **Status flows back** every second (Chromecast media status polling, AVPlayer time
-   observer): position, state, volume, finished or error. Progress is saved; at the end the
-   video is marked watched and the next one starts.
+   observer): position, state, volume, finished or error. Progress is saved; once the end
+   credits start the video is marked watched, and at the end the next one starts.
 
 ---
 
@@ -403,7 +459,9 @@ feature has not been tried on real hardware, it says so.
 
 - **Discovery:** Bonjour `_googlecast._tcp` with TXT records: `fn` friendly name, `md` model,
   `id` stable id, `ca` capability flags (1 video out, 4 audio out, 32 speaker group). Devices
-  without video output are listed as speakers; the model name is the fallback.
+  without video output are listed as speakers; the model name is the fallback. The search
+  runs from launch; after five seconds with nothing found the menus say so ("None found on
+  this network", "No Chromecasts on this network").
 - **Connection:** TLS to the device (its certificate is accepted as is; Cast devices use
   Google's own authority), IPv4, 15-second connect timeout, 20 seconds overall for the first
   message; a connection that is "waiting" (for example while macOS asks you to allow local
@@ -440,8 +498,17 @@ feature has not been tried on real hardware, it says so.
 - Playback on the Mac uses `AVPlayer` with the standard `AVPlayerView` controls, floating
   controls, full screen and picture in picture. AirPlay is `AVPlayer`'s external playback: the
   TV fetches Driftcast's URLs itself, so HEVC, HDR and Dolby audio reach it untouched.
-- The AirPlay picker is the system `AVRoutePickerView` in the toolbar; the Output menu's
-  "Apple TV or AirPlay TV…" item opens the same picker.
+- The AirPlay list is the system's own. The toolbar's AirPlay button and the "Apple TV or
+  AirPlay TV…" items in the Output menus open it through the AirPlay button of the video
+  window's player (`AVPlayerView`), the only picker that moves the video: an
+  `AVRoutePickerView` the app makes lists the same devices, but on macOS 26 choosing a TV in
+  it leaves the video on the Mac. With a video loaded and its window closed, the window opens
+  first; with nothing loaded, the toolbar's own picker is the fallback. Confirmed on an
+  AirPlay TV.
+- The TV's own pause and seek panel shows the cleaned name, short enough not to wrap: an
+  episode is the show's name over "Season 4, Episode 7"; a film is its name, without the year
+  once it has been found online (the title card showed it), with the year when it hasn't. The
+  panel itself is drawn by the TV.
 - HLS streams for Apple devices use `master.m3u8`, where subtitles are a WebVTT rendition
   (10-second segments with `X-TIMESTAMP-MAP`) that AVPlayer lists as a legible option and
   Driftcast selects. Direct-play MP4 files are served whole.
@@ -472,12 +539,12 @@ feature has not been tried on real hardware, it says so.
   external files likewise, `.vtt` read directly. Cues are served either as one WebVTT document
   (Chromecast side-loaded track) or as HLS subtitle segments (Apple).
 - Picture subtitles: PGS and VobSub inside MKV are read by the vendored MKV parser; `.sup`
-  and `.idx`/`.sub` files directly. Each image is recognised with the Vision framework in the
+  and `.idx`/`.sub` files directly. Each image is recognized with the Vision framework in the
   track's language, your preferred language and English; results are written through an SRT
   fixer and cached in Application Support/Driftcast/OCR keyed by file, modification date and
   track. Without OCR (or for DVB/XSUB), the subtitle is overlaid onto the video during
   conversion.
-- Languages: three-letter container codes are mapped to two-letter codes and localised names;
+- Languages: three-letter container codes are mapped to two-letter codes and localized names;
   a file suffix is treated as a language only when the system knows a name for it, so
   `Up.srt` isn't "language up".
 - OpenSubtitles: REST API v1 with the app's or your key; search parameters sorted and
@@ -493,8 +560,12 @@ feature has not been tried on real hardware, it says so.
   items with id, URL and attached subtitle files), progress per file path (position, duration,
   updated), the set of watched paths and the selected playlist. Writes are coalesced (0.5 s)
   and forced on quit.
-- Progress rules: within the last 4% of the file (at least 30 s, at most 10%) counts as
-  finished; positions under 10 s are not saved (so a rewind to the start keeps the old resume
+- Progress rules: a video is finished where its end credits start. When the file has a
+  chapter named for them in its second half ("End Credits", "Credits", "Abspann",
+  "Générique", "Titoli di coda" and other languages), that chapter's start less 10 seconds
+  counts (new in 1.1.1: the first such chapter, so a "Post-Credits Scene" chapter doesn't move
+  it later); otherwise the last 4% of the file (at least 30 s, at most 10%) is taken as the
+  credits. Positions under 10 s are not saved (so a rewind to the start keeps the old resume
   point); "Play from Beginning" clears it.
 - Show detection (`SeriesName`): episode markers `S01E02`, `S1.E11`, `1x02`, `Season 3`,
   `Episode 4`/`Ep 4`/`E4`/`Part 2`/`Chapter 5`/`Volume 1`/`Disc 2`/`CD1`, ` - 03`, or a common
@@ -518,9 +589,11 @@ feature has not been tried on real hardware, it says so.
 | `~/Library/Caches/Driftcast/Keyframes/` | keyframe indexes for copied video |
 | `~/Library/Caches/Driftcast/Metadata/`, `Artwork/` | film and show details and their posters |
 | `~/Library/Application Support/Driftcast/title-overrides.json` | titles corrected by hand |
+| `~/Movies/Videos I have watched on Driftcast.txt` and `.json` | the list of videos played, to read and as JSON (new in 1.1.1) |
+| `~/Library/Logs/Driftcast/Errors.log` | the error log (new in 1.1.1) |
 | `$TMPDIR/DriftcastStreams/<pid>/<session>/` | HLS segments while a video plays; removed when it stops and at quit; folders of copies that are no longer running are cleaned at launch |
 | `~/Library/Preferences/com.leechsoftware.driftcast.plist` | settings |
-| `Driftcast.app/Contents/Resources/ffmpeg/` | the bundled ffmpeg and ffprobe with their licences |
+| `Driftcast.app/Contents/Resources/ffmpeg/` | the bundled ffmpeg and ffprobe with their licenses |
 | `Driftcast.app/Contents/Resources/Licenses/` | `LICENSE.txt` and `NOTICE.txt`, opened from About |
 
 Network: TCP 48100 inbound from the device (any port if 48100 is busy), TCP 8009 outbound to a
@@ -548,7 +621,7 @@ local-network permission.
   of the GPU route, the conversion steps down by itself.
 - **Dolby Vision profile 5 converted to H.264** can't be accurate (no tool here reshapes it),
   and the note in the stream details says so. Passed through, it is labelled correctly.
-- No spatial audio virtualisation, no phone remote, no network speed test.
+- No spatial audio virtualization, no phone remote, no network speed test.
 - Dolby Vision is passed through as HEVC to devices that report HDR support; whether a given
   TV shows the Dolby Vision layer or only the HDR10 base layer depends on the TV, and
   dual-layer (profile 7) files have not been tested.
@@ -557,10 +630,10 @@ local-network permission.
 
 ---
 
-## Requirements, building, licence
+## Requirements, building, license
 
 - macOS 13 Ventura or later, Apple silicon or Intel; the Mac and the device on the same network.
 - Build with Xcode 16 or later from `Driftcast.xcodeproj`; run `Scripts/bundle-ffmpeg.sh` once
-  to fetch the media engine (see `SHIPPING.md` for the universal build and notarisation). `Tests/run-harness.sh` runs the logic checks.
+  to fetch the media engine (see `SHIPPING.md` for the universal build and notarization). `Tests/run-harness.sh` runs the logic checks.
 - Copyright 2026 Leech Software, Inc. GNU General Public License v3 or later (`LICENSE`);
   third-party components and trademarks in `NOTICE.md`; how to contribute in `CONTRIBUTING.md`.

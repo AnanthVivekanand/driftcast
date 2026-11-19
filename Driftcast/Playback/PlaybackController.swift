@@ -384,7 +384,8 @@ final class PlaybackController: ObservableObject {
                 details = await MetadataLookup.shared.details(for: item.url, within: 6)
                 if stale() { return }
             }
-            tvLines = item.parsedTitle.tvLines(lookedUp: details != nil)
+            // The year goes only when the poster card, which shows it, is on.
+            tvLines = item.parsedTitle.tvLines(lookedUp: details != nil && cardWanted)
             var artwork: Data?
             if let url = details?.posterURL { artwork = await MetadataLookup.shared.artwork(url, within: 4) }
             if artwork == nil { artwork = await Thumbnailer.shared.poster(for: item.url, duration: info.duration) }
@@ -416,6 +417,7 @@ final class PlaybackController: ObservableObject {
                 path = session.castPath
             }
             let url = await MediaServer.shared.url(path: path, host: host)
+            if stale() { return }
             streamURL = url
             var subtitleURL: URL?
             if cues != nil {
@@ -447,6 +449,11 @@ final class PlaybackController: ObservableObject {
             try await target.load(request)
             if stale() { return }
             phase = .buffering
+            // A video picked or reached in the playlist, not one reloaded after a seek or a
+            // change of screen.
+            if fresh, Prefs.bool(Prefs.watchedList) {
+                WatchedList.record(title: item.displayName, filename: item.url.lastPathComponent)
+            }
             // Also while casting: the window then carries the "connected to" watermark.
             videoWindowRequest += 1
             updateNowPlayingInfo()
@@ -454,6 +461,8 @@ final class PlaybackController: ObservableObject {
             if token != loadToken || error is CancellationError { return }
             if let created { MediaServer.shared.unregister(created); created.stop() }
             if session === created { session = nil }
+            streamURL = nil   // the stream is gone; the mirror has nothing to follow
+            ErrorLog.record("Playback", "\(item.url.lastPathComponent) on \(outputName)", error: error)
             phase = .failed(error.localizedDescription)
         }
     }
@@ -482,6 +491,7 @@ final class PlaybackController: ObservableObject {
         guard let session, nowPlaying != nil else { return }
         if case .preparing = phase { return }
         if let e = s.error {
+            ErrorLog.record("Playback", "\(nowPlaying?.url.lastPathComponent ?? "?") on \(outputName): \(e)")
             phase = .failed(e)
             return
         }
@@ -516,6 +526,7 @@ final class PlaybackController: ObservableObject {
         if let last = MediaServer.shared.lastDeviceRequest, last >= since {
             if airPlayProblem != nil { airPlayProblem = nil }
         } else if airPlayProblem == nil, Date().timeIntervalSince(since) > 15 {
+            ErrorLog.record("AirPlay", "\(nowPlaying?.url.lastPathComponent ?? "?"): the TV connected but asked this Mac for nothing in 15 seconds")
             airPlayProblem = "The TV connected but can't load the video from this Mac. Check that both are on the same Wi-Fi network, turn off any VPN on this Mac, and allow Driftcast under System Settings > Network > Firewall > Options."
         }
     }
@@ -535,7 +546,8 @@ final class PlaybackController: ObservableObject {
         // `-PreviewCastingWatermark Name` shows the casting window with no TV to hand.
         if UserDefaults.standard.string(forKey: "PreviewCastingWatermark") != nil, nowPlaying != nil { casting = true }
         #endif
-        guard casting, let url = streamURL, info?.video != nil, Self.videoWindowIsOpen else {
+        // A speaker is sent sound alone: a copy of that has no picture, and the poster stays.
+        guard casting, let url = streamURL, info?.video != nil, plan?.isAudioOnly != true, Self.videoWindowIsOpen else {
             mirror.stop()
             return
         }
@@ -605,7 +617,8 @@ final class PlaybackController: ObservableObject {
     func showVideoWindow() { videoWindowRequest += 1 }
 
     static var videoWindowIsOpen: Bool {
-        NSApp.windows.contains { $0.identifier?.rawValue.hasPrefix("video") == true && $0.isVisible }
+        // A window in the Dock is still open: it isn't brought back, and playback isn't paused for it.
+        NSApp.windows.contains { $0.identifier?.rawValue.hasPrefix("video") == true && ($0.isVisible || $0.isMiniaturized) }
     }
 
     /// The video window was closed. Casting carries on (the window only shows "connected to"),

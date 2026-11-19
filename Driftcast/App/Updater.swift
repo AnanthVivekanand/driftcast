@@ -218,6 +218,7 @@ final class Updater: ObservableObject {
             } catch is CancellationError {
                 self?.install = .idle
             } catch {
+                ErrorLog.record("Update", error: error)
                 self?.install = .failed(error.localizedDescription)
             }
         }

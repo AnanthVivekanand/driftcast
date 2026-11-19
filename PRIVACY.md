@@ -1,6 +1,6 @@
 # Driftcast privacy policy
 
-Last updated: 9 November 2026
+Last updated: 19 November 2026
 
 Driftcast is a free, open-source Mac app from Leech Software, Inc. It plays the videos on your
 Mac on the devices in your home.
@@ -45,6 +45,8 @@ All of this stays on your Mac, and deleting the folders or files removes it.
 | `~/Library/Preferences/com.leechsoftware.driftcast.plist` | Your settings, including any API keys you enter |
 | The system temporary folder | Video segments while a video plays, removed when it stops |
 | The macOS unified log | Requests from your devices and player events, for troubleshooting. It is never sent anywhere by the app |
+| `~/Movies/Videos I have watched on Driftcast` (a text file, and a JSON file of the same name) | The videos you have played: each file's name, its cleaned name and when. Turn it off in Settings > General. It is never sent anywhere by the app |
+| `~/Library/Logs/Driftcast/Errors.log` | Things that went wrong, each with the file's name and the reason, for troubleshooting. It is never sent anywhere by the app |
 
 ## Permissions
 

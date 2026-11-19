@@ -124,6 +124,9 @@ struct PlaybackCommands: Commands {
             Button("Show in Finder") { player.revealInFinder() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(player.nowPlaying == nil)
+            Divider()
+            // The list of videos played (WatchedList), as a spreadsheet saved where the person likes.
+            Button("Export Watched Videos…") { WatchedList.exportCSV() }
         }
         CommandGroup(after: .sidebar) {
             Toggle("Show Details", isOn: $showDetails)
@@ -244,6 +247,23 @@ struct HelpCommands: Commands {
                 Button("Driftcast on GitHub") { NSWorkspace.shared.open(source) }
             }
             Button("Driftcast Website") { NSWorkspace.shared.open(AboutWindow.website) }
+            Divider()
+            // What to read, or attach to a report, after something has failed.
+            Button("Show Error Log") { Self.showErrorLog() }
+        }
+    }
+}
+
+extension HelpCommands {
+    static func showErrorLog() {
+        ErrorLog.flush()
+        if FileManager.default.fileExists(atPath: ErrorLog.url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([ErrorLog.url])
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Nothing has gone wrong yet"
+            alert.informativeText = "When something fails, the reason is written to Errors.log in Library > Logs > Driftcast."
+            alert.runModal()
         }
     }
 }

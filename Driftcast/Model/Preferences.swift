@@ -36,6 +36,8 @@ enum Prefs {
     static let showDetails = "showDetails"
     /// Which Settings tab is showing, so menus can open Settings on a particular one.
     static let settingsTab = "settingsTab"
+    /// Whether each video played is added to the list in the Movies folder (WatchedList).
+    static let watchedList = "keepWatchedList"
 
     static func register() {
         let systemLanguage = Locale.current.language.languageCode?.identifier ?? "en"
@@ -65,6 +67,7 @@ enum Prefs {
             autoUpdateCheck: true,
             onlineDetails: true,
             titleCard: true,
+            watchedList: true,
         ])
     }
 

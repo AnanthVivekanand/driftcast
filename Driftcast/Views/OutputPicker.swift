@@ -276,7 +276,7 @@ private struct CastingControls: View {
     }
 }
 
-/// The video window's picture while a TV plays the video: the mirror's silent copy, under a grey
+/// The video window's picture while a TV plays the video: the mirror's silent copy, under a gray
 /// veil with who it is playing on. Until the copy has a picture, the poster stands in.
 private struct CastingPicture: View {
     @ObservedObject var mirror: CastingMirror
@@ -291,7 +291,7 @@ private struct CastingPicture: View {
     }
 }
 
-/// Covers the picture while the video is on another device: over the video a grey veil, or
+/// Covers the picture while the video is on another device: over the video a gray veil, or
 /// before there is any picture the film's poster, dimmed, with who it is playing on across it.
 private struct CastingWatermark: View {
     let deviceName: String
@@ -429,6 +429,8 @@ private struct PlayerViewRepresentable: NSViewRepresentable {
         v.controlsStyle = showsControls ? .floating : .none
         v.showsFullScreenToggleButton = showsControls
         v.allowsPictureInPicturePlayback = showsControls
+        // The silent copy is not what is playing: it must not claim Now Playing or the media keys.
+        if !showsControls { v.updatesNowPlayingInfoCenter = false }
         return v
     }
 

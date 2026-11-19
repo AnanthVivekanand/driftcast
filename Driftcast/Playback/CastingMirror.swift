@@ -34,7 +34,11 @@ final class CastingMirror: ObservableObject {
             let item = AVPlayerItem(url: url)
             statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
                 let ready = item.status == .readyToPlay
-                DispatchQueue.main.async { self?.hasPicture = ready }
+                // Only for the stream still playing: this can arrive after a stop or a change.
+                DispatchQueue.main.async {
+                    guard let self, self.player.currentItem === item else { return }
+                    self.hasPicture = ready
+                }
             }
             player.replaceCurrentItem(with: item)
             seek(to: time)
