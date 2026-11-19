@@ -5,9 +5,6 @@ earlier versions are on the [releases page](https://github.com/leechsoftware/dri
 
 ## 1.1.1 (19 November 2026)
 
-This version is in the source now. The download follows when it is published; until then
-the releases page still offers 1.1.
-
 ### New
 
 - **A list of the videos you watch:** each video that starts playing is added to "Videos I
