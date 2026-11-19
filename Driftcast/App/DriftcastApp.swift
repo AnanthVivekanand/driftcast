@@ -198,13 +198,14 @@ struct OutputCommands: Commands {
                                              set: { if $0 { player.selectOutput(.local) } }))
             Button("Apple TV or AirPlay TV…") {
                 player.selectOutput(.local)
-                AirPlayPicker.shared.presentSoon()
+                AirPlayPicker.shared.presentSoon(openVideoWindow: player.nowPlaying == nil ? nil : { player.showVideoWindow() })
             }
             Divider()
             let screens = discovery.devices.filter { !$0.isAudioOnly }
             let speakers = discovery.devices.filter(\.isAudioOnly)
             if screens.isEmpty, speakers.isEmpty {
-                Text(discovery.problem.map { "Can't search for Chromecasts: \($0)" } ?? "No Chromecast found yet")
+                Text(discovery.problem.map { "Can't search for Chromecasts: \($0)" }
+                     ?? (discovery.searchedAWhile ? "No Chromecasts on this network" : "Searching for Chromecasts…"))
             }
             ForEach(screens) { device in deviceToggle(device) }
             if !speakers.isEmpty {
@@ -277,13 +278,20 @@ struct SubtitleCommands: Commands {
             Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
                 .disabled(player.nowPlaying == nil)
             Divider()
-            // The slider itself is an AppKit item that SubtitleSizeMenuItem adds under these.
-            Button("Larger Subtitles") { SubtitleSize.increase() }
-                .keyboardShortcut("=", modifiers: [.command, .option])
-                .disabled(!SubtitleSize.canIncrease)
-            Button("Smaller Subtitles") { SubtitleSize.decrease() }
-                .keyboardShortcut("-", modifiers: [.command, .option])
-                .disabled(!SubtitleSize.canDecrease)
+            // While AirPlaying the TV draws the subtitles at its own size, so the size
+            // controls (these and SubtitleSizeMenuItem's slider) are hidden, with a line saying
+            // why in their place.
+            if player.isAirPlaying {
+                Text(SubtitleSize.airPlayNote)
+            } else {
+                // The slider itself is an AppKit item that SubtitleSizeMenuItem adds under these.
+                Button("Larger Subtitles") { SubtitleSize.increase() }
+                    .keyboardShortcut("=", modifiers: [.command, .option])
+                    .disabled(!SubtitleSize.canIncrease)
+                Button("Smaller Subtitles") { SubtitleSize.decrease() }
+                    .keyboardShortcut("-", modifiers: [.command, .option])
+                    .disabled(!SubtitleSize.canDecrease)
+            }
             Divider()
             // Reading apiKey keeps this in step with Settings; the built-in key counts too.
             if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, OpenSubtitlesClient.builtInKey.isEmpty {

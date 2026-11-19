@@ -68,6 +68,8 @@ final class PlaybackController: ObservableObject {
     /// Incremented when local playback starts so the UI opens the video window.
     @Published private(set) var videoWindowRequest = 0
     var isScrubbing = false
+    /// What the TV's pause and seek panel shows for the video playing (`MediaTitle.tvLines`).
+    private var tvLines: (title: String, subtitle: String?)?
     /// Set by the Subtitles menu or the bar's subtitle button to open the online search sheet.
     @Published var showSubtitleSearch = false
     /// The video whose Media Info sheet should be open (File menu and right-click menu).
@@ -260,9 +262,10 @@ final class PlaybackController: ObservableObject {
     private func prepareAndLoad(_ item: MediaItem, at time: Double, fresh: Bool, token: Int) async {
         teardownSession()
         nowPlaying = item
+        tvLines = item.parsedTitle.tvLines(lookedUp: false)
         position = time
         seekableRange = time...time
-        phase = .preparing("Opening \(item.title)…")
+        phase = .preparing("Opening \(item.displayName)…")
         var created: StreamSession?
 
         func stale() -> Bool {
@@ -337,7 +340,10 @@ final class PlaybackController: ObservableObject {
             // is gets repackaged (copied, not converted) when the card is on.
             let cardWanted = Prefs.bool(Prefs.titleCard) && info.video != nil
             let isLocal = output == .local
-            if cardWanted, isLocal, plan.mode == .direct {
+            // So is a file with a title of its own (usually its release name): an AirPlay TV
+            // reading the file itself could show that while seeking. The stream carries no title.
+            let ownTitle = info.embeddedTitle.map { !$0.isEmpty && $0 != item.displayName } ?? false
+            if (cardWanted || ownTitle), isLocal, plan.mode == .direct {
                 plan.mode = .hls
                 if !plan.notes.isEmpty { plan.notes[0] = "Repackaged for streaming, no quality loss" }
             }
@@ -378,6 +384,7 @@ final class PlaybackController: ObservableObject {
                 details = await MetadataLookup.shared.details(for: item.url, within: 6)
                 if stale() { return }
             }
+            tvLines = item.parsedTitle.tvLines(lookedUp: details != nil)
             var artwork: Data?
             if let url = details?.posterURL { artwork = await MetadataLookup.shared.artwork(url, within: 4) }
             if artwork == nil { artwork = await Thumbnailer.shared.poster(for: item.url, duration: info.duration) }
@@ -386,7 +393,7 @@ final class PlaybackController: ObservableObject {
 
             if cardWanted, isLocal, let grid, let size = plan.outputVideoSize, let v = info.video,
                !(v.isHDR && !plan.isTranscodingVideo),   // an SDR card before HDR would make the TV switch modes twice
-               let card = TitleCard.render(poster: artwork, title: item.title, details: details, size: size) {
+               let card = TitleCard.render(poster: artwork, title: item.displayName, details: details, size: size) {
                 session.intro = StreamSession.Intro(card: card, size: size, atSegment: grid.index(at: time), hardware: settings.hardware,
                                                     format: TitleCard.Format(plan: plan))
             }
@@ -425,7 +432,7 @@ final class PlaybackController: ObservableObject {
                 url: url,
                 contentType: plan.mode == .direct ? MediaServer.contentType(forExtension: item.url.pathExtension) : "application/x-mpegURL",
                 isHLS: plan.mode == .hls,
-                title: item.title,
+                title: item.displayName,
                 startTime: session.deviceStartTime(forFileTime: time),
                 duration: info.duration,
                 subtitleURL: subtitleURL,
@@ -563,7 +570,7 @@ final class PlaybackController: ObservableObject {
         default: if !force { return }
         }
         lastProgressSave = Date()
-        library.updateProgress(for: item.url, position: position, duration: duration)
+        library.updateProgress(for: item.url, position: position, duration: duration, creditsStart: info?.creditsStart)
     }
 
     // MARK: Transport
@@ -593,6 +600,9 @@ final class PlaybackController: ObservableObject {
         saveProgress(force: true)
         finishStop()
     }
+
+    /// Brings the video window back (for its AirPlay button, say) without changing playback.
+    func showVideoWindow() { videoWindowRequest += 1 }
 
     static var videoWindowIsOpen: Bool {
         NSApp.windows.contains { $0.identifier?.rawValue.hasPrefix("video") == true && $0.isVisible }
@@ -807,11 +817,12 @@ final class PlaybackController: ObservableObject {
             let hash = OpenSubtitlesClient.movieHash(for: item.url)
             do {
                 var found = try await client.search(query: title.searchQuery, languages: language, movieHash: hash,
-                                                    season: title.season, episode: title.episode)
+                                                    season: title.season, episode: title.episode, videoName: item.baseName)
                 if found.isEmpty, hash != nil {
                     found = try await client.search(query: title.searchQuery, languages: language, movieHash: nil,
-                                                    season: title.season, episode: title.episode)
+                                                    season: title.season, episode: title.episode, videoName: item.baseName)
                 }
+                // Listed best first: made from this file, then for its release, then most downloaded.
                 guard let best = found.first else { return nil }
                 return try await client.download(best, for: item.url)
             } catch {
@@ -864,13 +875,17 @@ final class PlaybackController: ObservableObject {
 
     private func updateNowPlayingInfo() {
         guard let item = nowPlaying else { return }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: item.title,
+        let lines = tvLines ?? item.parsedTitle.tvLines(lookedUp: false)
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: lines.title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: phase == .playing ? 1.0 : 0.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
         ]
+        // The second line under the title on the TV's panel (and in Control Center).
+        if let subtitle = lines.subtitle { info[MPMediaItemPropertyArtist] = subtitle }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = phase == .paused ? .paused : (isPlaying ? .playing : .stopped)
     }
 }

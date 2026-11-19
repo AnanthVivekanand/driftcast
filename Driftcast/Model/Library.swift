@@ -7,7 +7,12 @@ struct MediaItem: Identifiable, Codable, Hashable {
     /// Subtitle files the user attached or downloaded (beyond ones found next to the video).
     var extraSubtitles: [URL] = []
 
-    var title: String { url.deletingPathExtension().lastPathComponent }
+    /// The file's name without its extension: "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG".
+    var baseName: String { url.deletingPathExtension().lastPathComponent }
+    /// What the file name says the video is: "The Sopranos", season 4, episode 7.
+    var parsedTitle: MediaTitle { MediaTitle.parse(fileName: baseName) }
+    /// The name shown for the video in lists, windows and on the TV: "The Sopranos S4 E7".
+    var displayName: String { parsedTitle.displayName }
     var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
 
     init(url: URL) { self.url = url }
@@ -32,6 +37,15 @@ struct WatchProgress: Codable, Hashable {
     var updated: Date
 
     var fraction: Double { duration > 0 ? min(1, position / duration) : 0 }
+
+    /// Where a video counts as finished: where its end credits start. A file with a credits
+    /// chapter says exactly (less a few seconds for a stop pressed as they begin). Otherwise
+    /// the last 4% is taken as the credits, at least 30 seconds and at most a tenth: about
+    /// five minutes of a two-hour film, two of a 54-minute episode, a little before its credits.
+    static func finishPoint(duration: Double, creditsStart: Double? = nil) -> Double {
+        if let c = creditsStart, c > duration / 2, c < duration { return max(duration / 2, c - 10) }
+        return duration - min(max(30, duration * 0.04), duration * 0.1)
+    }
 }
 
 /// Playlists plus last-position tracking, persisted as JSON in Application Support.
@@ -293,11 +307,9 @@ final class Library: ObservableObject {
 
     func resumePosition(for url: URL) -> Double? { progress[url.path]?.position }
 
-    func updateProgress(for url: URL, position: Double, duration: Double) {
+    func updateProgress(for url: URL, position: Double, duration: Double, creditsStart: Double? = nil) {
         guard duration > 0 else { return }
-        // Credits count as finished; capped so short clips aren't "watched" as soon as they start.
-        let tail = min(max(30, duration * 0.04), duration * 0.1)
-        if duration - position < tail {
+        if position >= WatchProgress.finishPoint(duration: duration, creditsStart: creditsStart) {
             markWatched(url)
         } else if position < 10 {
             return // keep any earlier resume point; "Play from Beginning" clears it explicitly

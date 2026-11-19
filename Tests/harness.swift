@@ -295,10 +295,10 @@ let lib = Library()
 let pid = lib.newPlaylist(named: "harness")
 lib.add([mp4, mkv, hdr], to: pid)
 lib.move(in: pid, from: IndexSet(integer: 0), to: 3)
-var names = lib.playlists.first { $0.id == pid }!.items.map(\.title)
+var names = lib.playlists.first { $0.id == pid }!.items.map(\.baseName)
 check(names == ["Test.Movie.2024.1080p", "hdr", "simple"], "move first to end: \(names)")
 lib.move(in: pid, from: IndexSet(integer: 2), to: 0)
-names = lib.playlists.first { $0.id == pid }!.items.map(\.title)
+names = lib.playlists.first { $0.id == pid }!.items.map(\.baseName)
 check(names == ["simple", "Test.Movie.2024.1080p", "hdr"], "move last to start: \(names)")
 lib.deletePlaylist(pid)
 
@@ -385,9 +385,9 @@ do {
     let before = lib.playlists.count
     let added = lib.add(files, to: other)
     let show = lib.playlists.first { $0.name == "Sopranos" }
-    check(lib.playlists.count == before + 1 && show?.items.map(\.title) == ["Sopranos.S1.E2.dolbuy", "Sopranos.S1.E11.dolbuy", "Sopranos.S1.E12.dolbuy"],
-          "dropping episodes makes a Sopranos playlist in episode order: \(show?.items.map(\.title) ?? [])")
-    check(lib.playlists.first { $0.id == other }?.items.map(\.title) == ["Heat.1995"] && added.count == 4 && lib.selection == show?.id, "the odd film stays in the playlist it was dropped on; the show is selected")
+    check(lib.playlists.count == before + 1 && show?.items.map(\.baseName) == ["Sopranos.S1.E2.dolbuy", "Sopranos.S1.E11.dolbuy", "Sopranos.S1.E12.dolbuy"],
+          "dropping episodes makes a Sopranos playlist in episode order: \(show?.items.map(\.baseName) ?? [])")
+    check(lib.playlists.first { $0.id == other }?.items.map(\.baseName) == ["Heat.1995"] && added.count == 4 && lib.selection == show?.id, "the odd film stays in the playlist it was dropped on; the show is selected")
     lib.add(files, to: other)
     check(lib.playlists.filter { $0.name == "Sopranos" }.count == 1 && lib.playlists.first { $0.name == "Sopranos" }?.items.count == 3, "dropping the same episodes again reuses the playlist without duplicates")
     if let show { lib.deletePlaylist(show.id) }
@@ -434,6 +434,89 @@ let odyssey = MediaTitle.parse(fileName: "2001.A.Space.Odyssey.1968.2160p.UHD")
 check(odyssey.title == "2001 A Space Odyssey" && odyssey.year == 1968, "title: a year at the start stays: \(odyssey)")
 let plain = MediaTitle.parse(fileName: "Dune Part Two 2160p HDR")
 check(plain.title == "Dune Part Two" && plain.year == nil, "title: no year, cut at release tag: \(plain)")
+// Release names -> the names shown in the list, the windows and on the TV
+let rarbg = MediaTitle.parse(fileName: "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG")
+check(rarbg.displayName == "The Sopranos S4 E7" && rarbg.title == "The Sopranos" && rarbg.titleTag == "S4 E7", "display name: release name -> \(rarbg.displayName)")
+check(heat.displayName == "Heat (1995)" && office.displayName == "The Office S3 E7" && plain.displayName == "Dune Part Two" && sop.displayName == "Sopranos S1 E11",
+      "display names: \(heat.displayName), \(office.displayName), \(plain.displayName), \(sop.displayName)")
+check(MediaTitle.parse(fileName: "Inception (2010)").displayName == "Inception (2010)", "display name: a tidy name stays as it is")
+check(MediaTitle.parse(fileName: "Some.Film.x264-GRP").displayName == "Some Film", "display name: a tag joined to its group by a hyphen is cut")
+check(MediaTitle.parse(fileName: "Spider-Man.No.Way.Home.2021.2160p.WEB-DL").displayName == "Spider-Man No Way Home (2021)", "display name: a hyphen inside the title stays")
+check(MediaTitle.parse(fileName: "Show.Episode.12.720p").displayName == "Show E12", "display name: an episode with no season")
+// Everyday files: the name made readable, keeping dates and times
+let everyday: [(String, String)] = [
+    ("Screen Recording 2024-01-02 at 10.30.15 AM", "Screen Recording 2024-01-02 at 10.30.15 AM"),
+    ("My_Birthday_Party_2023-05-12", "My Birthday Party 2023-05-12"),
+    ("Birthday 2023 at Grandmas", "Birthday 2023 at Grandmas"),
+    ("IMG_1234", "IMG 1234"),
+    ("vacation.video.final", "Vacation Video Final"),
+    ("Drone_flight_4K_60fps", "Drone flight"),
+    ("Never Gonna Give You Up [dQw4w9WgXcQ]", "Never Gonna Give You Up"),
+    ("my-summer-vacation-2023", "My Summer Vacation (2023)"),
+    ("Party 12.05.2023", "Party 12.05.2023"),
+    ("The.Daily.Show.2024.01.02.Guest.720p", "The Daily Show 2024.01.02 Guest"),
+    ("Blade Runner 2049", "Blade Runner 2049"),
+    ("Blade.Runner.2049.2017.1080p.BluRay", "Blade Runner 2049 (2017)"),
+    ("Inception (2010) [1080p] [YTS.MX]", "Inception (2010)"),
+    ("Heat 1995-GRP", "Heat (1995)"),
+    ("Show [S01E02]", "Show S1 E2"),
+]
+check(heat.tvLines(lookedUp: true) == ("Heat", nil) && heat.tvLines(lookedUp: false) == ("Heat (1995)", nil),
+      "TV panel: a film found online drops its year, an unknown one keeps it")
+check(rarbg.tvLines(lookedUp: true) == ("The Sopranos", "Season 4, Episode 7") && rarbg.tvLines(lookedUp: false) == ("The Sopranos", "Season 4, Episode 7"),
+      "TV panel: an episode is the show's name over its season and episode")
+// Subtitle release names against the video's file name
+let video = "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG"
+let releaseCases: [(String, Bool, String)] = [
+    ("The.Sopranos.S04E07.1080p.BluRay.x265-RARBG", true, "the same name"),
+    ("The.Sopranos.S04E07.1080p.BluRay.x265-RARBG.en.srt", true, "the same name with a language and extension"),
+    ("The Sopranos S04E07 720p BluRay x264-RARBG", true, "same group and source, another size"),
+    ("The.Sopranos.S04E07.1080p.WEB-DL.x264-RARBG", false, "same group, a streaming source"),
+    ("The.Sopranos.S04E07.1080p.BluRay.x264-DEMAND", false, "another group"),
+    ("The.Sopranos.S04E08.1080p.BluRay.x265-RARBG", false, "another episode"),
+    ("The Sopranos Season 4", false, "no release at all"),
+]
+for (sub, expected, why) in releaseCases {
+    check(ReleaseMatch.isSameRelease(sub, as: video) == expected, "subtitle match: \(why) (\(sub))")
+}
+check(ReleaseMatch.isSameRelease("Heat.2013.1080p.BluRay.x264-GRP", as: "Heat.1995.1080p.BluRay.x264-GRP") == false
+      && ReleaseMatch.isSameRelease("Heat.1995.720p.BluRay.x264-GRP", as: "Heat.1995.1080p.BluRay.x264-GRP"),
+      "subtitle match: another year's film from the same group isn't a match")
+check(ReleaseMatch.group("Movie.2010.1080p.WEB-DL") == nil && ReleaseMatch.group("Spider-Man.2002.1080p") == nil
+      && ReleaseMatch.group("x264-GRP.en") == "grp", "release group: a hyphenated tag or title isn't a group")
+for (file, shown) in everyday {
+    let got = MediaTitle.parse(fileName: file).displayName
+    check(got == shown, "display name: \(file) -> \(got)")
+}
+// The title written into a file (a TV reading the file itself would show it)
+let taggedJSON = #"{"format":{"duration":"10","format_name":"mov","tags":{"title":"The.Sopranos.S04E07.1080p.BluRay.x265-RARBG"}},"streams":[]}"#
+let untaggedJSON = #"{"format":{"duration":"10","format_name":"mov"},"streams":[]}"#
+check((try? MediaProbe.parse(Data(taggedJSON.utf8)))?.embeddedTitle == "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG"
+      && (try? MediaProbe.parse(Data(untaggedJSON.utf8)))?.embeddedTitle == nil, "probe: the file's own title tag is read")
+// Where the end credits start, from the file's chapters
+func chaptersJSON(_ chapters: [(Double, String)], start: Double = 0) -> Data {
+    let list = chapters.map { #"{"start_time":"\#($0.0)","tags":{"title":"\#($0.1)"}}"# }.joined(separator: ",")
+    return Data(#"{"format":{"duration":"7200","format_name":"matroska","start_time":"\#(start)"},"streams":[],"chapters":[\#(list)]}"#.utf8)
+}
+let filmChapters: [(Double, String)] = [(0, "Opening Credits"), (3000, "Chapter 12"), (6800.5, "End Credits")]
+check((try? MediaProbe.parse(chaptersJSON(filmChapters)))?.creditsStart == 6800.5
+      && (try? MediaProbe.parse(chaptersJSON(filmChapters, start: 10)))?.creditsStart == 6790.5,
+      "probe: the end credits chapter is found, counted from the film's start")
+check((try? MediaProbe.parse(chaptersJSON([(10, "Chapter 1"), (6700, "Générique de fin")])))?.creditsStart == 6700
+      && (try? MediaProbe.parse(chaptersJSON([(6900, "ABSPANN")])))?.creditsStart == 6900,
+      "probe: credits chapters in other languages, any case or accents")
+check((try? MediaProbe.parse(chaptersJSON([(0, "Opening Credits"), (3000, "Chapter 12")])))?.creditsStart == nil
+      && (try? MediaProbe.parse(chaptersJSON([])))?.creditsStart == nil
+      && (try? MediaProbe.parse(Data(untaggedJSON.utf8)))?.creditsStart == nil,
+      "probe: opening credits, unnamed chapters or none at all mark no end credits")
+// Where a video counts as finished
+check(WatchProgress.finishPoint(duration: 7200) == 6912 && WatchProgress.finishPoint(duration: 120) == 108
+      && abs(WatchProgress.finishPoint(duration: 3232.1) - (3232.1 - 129.284)) < 0.001,
+      "finished: the last 4% is taken as the credits, 30 s at least, a tenth at most")
+check(WatchProgress.finishPoint(duration: 7200, creditsStart: 6800) == 6790
+      && WatchProgress.finishPoint(duration: 7200, creditsStart: 100) == 6912
+      && WatchProgress.finishPoint(duration: 7200, creditsStart: 7300) == 6912,
+      "finished: a credits chapter is used when it's in the second half")
 check(TitleMatch.score(candidate: "Heat", year: 1995, wanted: heat) == 5 && TitleMatch.score(candidate: "Heat", year: 1986, wanted: heat) == 0
       && TitleMatch.score(candidate: "The Office", year: 2005, wanted: office) > 0 && TitleMatch.score(candidate: "Heat Wave", year: 1995, wanted: heat) == 3
       && TitleMatch.score(candidate: "Cheat", year: 1995, wanted: heat) == 0, "title matching: exact, year, prefix, no substring inside words")

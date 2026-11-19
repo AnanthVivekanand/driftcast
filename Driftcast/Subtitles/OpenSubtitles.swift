@@ -23,8 +23,16 @@ struct OpenSubtitlesClient {
         var language: String
         var downloads: Int
         var hearingImpaired: Bool
+        /// OpenSubtitles knows it was made from this exact file.
         var hashMatch: Bool
         var title: String
+        /// Its release name says it was made for the same release as the video (`ReleaseMatch`).
+        var releaseMatch = false
+
+        /// Made for this file or its release, so it should be in sync.
+        var isMatch: Bool { hashMatch || releaseMatch }
+        /// What it was made from, as the uploader named it.
+        var name: String { release.isEmpty ? fileName : release }
     }
 
     enum Failure: LocalizedError {
@@ -86,7 +94,10 @@ struct OpenSubtitlesClient {
     /// Searches by file hash (exact release match) and by title, narrowed to one episode of a
     /// show when the season and episode are known. The API wants parameters sorted and
     /// lower-cased or it answers with a redirect.
-    func search(query: String, languages: String, movieHash: String?, season: Int? = nil, episode: Int? = nil) async throws -> [Result] {
+    /// With `videoName` (the file's name without extension), subtitles made for the same release
+    /// are marked and listed first, after any made from this exact file.
+    func search(query: String, languages: String, movieHash: String?, season: Int? = nil, episode: Int? = nil,
+                videoName: String? = nil) async throws -> [Result] {
         var items: [URLQueryItem] = []
         if !languages.isEmpty { items.append(URLQueryItem(name: "languages", value: languages.lowercased())) }
         if let movieHash { items.append(URLQueryItem(name: "moviehash", value: movieHash)) }
@@ -107,17 +118,26 @@ struct OpenSubtitlesClient {
             let feature = attrs["feature_details"] as? [String: Any] ?? [:]
             var title = feature["title"] as? String ?? feature["movie_name"] as? String ?? ""
             if let year = feature["year"] as? Int { title += " (\(year))" }
-            return Result(fileID: fileID,
-                          release: attrs["release"] as? String ?? "",
-                          fileName: file["file_name"] as? String ?? "",
-                          language: attrs["language"] as? String ?? "",
-                          downloads: attrs["download_count"] as? Int ?? 0,
-                          hearingImpaired: attrs["hearing_impaired"] as? Bool ?? false,
-                          hashMatch: attrs["moviehash_match"] as? Bool ?? false,
-                          title: title)
+            var result = Result(fileID: fileID,
+                                release: attrs["release"] as? String ?? "",
+                                fileName: file["file_name"] as? String ?? "",
+                                language: attrs["language"] as? String ?? "",
+                                downloads: attrs["download_count"] as? Int ?? 0,
+                                hearingImpaired: attrs["hearing_impaired"] as? Bool ?? false,
+                                hashMatch: attrs["moviehash_match"] as? Bool ?? false,
+                                title: title)
+            if let videoName {
+                result.releaseMatch = [result.release, result.fileName].contains {
+                    !$0.isEmpty && ReleaseMatch.isSameRelease($0, as: videoName)
+                }
+            }
+            return result
         }
-        .sorted { ($0.hashMatch ? 1 : 0, $0.downloads) > ($1.hashMatch ? 1 : 0, $1.downloads) }
+        .sorted { (Self.rank($0), $0.downloads) > (Self.rank($1), $1.downloads) }
     }
+
+    /// Exact file first, then the same release, then the rest.
+    static func rank(_ r: Result) -> Int { r.hashMatch ? 2 : r.releaseMatch ? 1 : 0 }
 
     /// Downloads a subtitle as SRT into Application Support and returns the file.
     func download(_ result: Result, for video: URL) async throws -> URL {

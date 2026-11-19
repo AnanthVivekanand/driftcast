@@ -40,10 +40,14 @@ struct NowPlayingBar: View {
             }
             .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(player.nowPlaying?.title ?? "Nothing playing")
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                Group {
+                    if let item = player.nowPlaying {
+                        TitleLine(title: item.parsedTitle)
+                    } else {
+                        Text("Nothing playing").lineLimit(1)
+                    }
+                }
+                .font(.callout.weight(.medium))
                 Text(player.statusText)
                     .font(.caption)
                     .foregroundStyle(isFailed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))

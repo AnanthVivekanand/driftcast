@@ -108,12 +108,13 @@ struct SubtitleSearchView: View {
     private var resultsTable: some View {
         Table(results, selection: $selection) {
             TableColumn("Release") { r in
-                HStack(spacing: 4) {
-                    if r.hashMatch {
-                        Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                            .help("Matches this exact file")
-                    }
-                    Text(r.release.isEmpty ? r.fileName : r.release).lineLimit(1)
+                HStack(spacing: 6) {
+                    if r.isMatch { MatchTag(exact: r.hashMatch) }
+                    Text(r.name)
+                        .fontWeight(r.isMatch ? .semibold : .regular)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(r.name)
                 }
             }
             TableColumn("Language") { r in Text(Lang.name(r.language) ?? r.language) }
@@ -144,13 +145,17 @@ struct SubtitleSearchView: View {
                 let client = try OpenSubtitlesClient.fromSettings()
                 let title = await MetadataLookup.shared.title(for: item.url)
                 let hash = await Task.detached { OpenSubtitlesClient.movieHash(for: item.url) }.value
-                var found = try await client.search(query: q, languages: lang, movieHash: hash, season: title.season, episode: title.episode)
+                var found = try await client.search(query: q, languages: lang, movieHash: hash, season: title.season, episode: title.episode,
+                                                    videoName: item.baseName)
                 if found.isEmpty, hash != nil {
-                    found = try await client.search(query: q, languages: lang, movieHash: nil, season: title.season, episode: title.episode)
+                    found = try await client.search(query: q, languages: lang, movieHash: nil, season: title.season, episode: title.episode,
+                                                    videoName: item.baseName)
                 }
                 results = found
                 selection = found.first?.id
-                message = found.isEmpty ? "No subtitles found." : "\(found.count) found. Double-click one, or select it and click Use."
+                let matches = found.filter(\.isMatch).count
+                let count = matches > 0 ? "\(found.count) found, \(matches) made for this video." : "\(found.count) found."
+                message = found.isEmpty ? "No subtitles found." : "\(count) Double-click one, or select it and click Use."
             } catch let failure as OpenSubtitlesClient.Failure where failure.isKeyRefused {
                 // Back to the box, saying why, rather than an error down here with nowhere to act on it.
                 results = []
@@ -177,5 +182,23 @@ struct SubtitleSearchView: View {
                 message = error.localizedDescription
             }
         }
+    }
+}
+
+/// The green "MATCH" beside a subtitle made for this video: from this exact file ("EXACT"), or
+/// for the same release (same group and source), so it should be in sync.
+private struct MatchTag: View {
+    let exact: Bool
+
+    var body: some View {
+        Text(exact ? "EXACT" : "MATCH")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.green)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.green.opacity(0.18)))
+            .fixedSize()
+            .help(exact ? "Made from this exact file, so it will be in sync."
+                        : "Made for the same release as this video (same group and source), so it should be in sync.")
     }
 }

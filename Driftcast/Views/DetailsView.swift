@@ -224,7 +224,7 @@ struct DetailsView: View {
 
     private func heading(_ item: MediaItem) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(details?.isEpisode == true ? (details?.showTitle ?? details?.title ?? item.title) : (details?.title ?? parsed?.title ?? item.title))
+            Text(details?.isEpisode == true ? (details?.showTitle ?? details?.title ?? item.parsedTitle.title) : (details?.title ?? parsed?.title ?? item.parsedTitle.title))
                 .font(.title2.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -313,7 +313,7 @@ struct DetailsView: View {
     @ViewBuilder private var correctionButton: some View {
         if onlineDetails, let item {
             Button(details == nil ? "Search by Title…" : "Not this title? Search again…") {
-                correctionTitle = details?.title ?? parsed?.title ?? item.title
+                correctionTitle = details?.title ?? parsed?.title ?? item.parsedTitle.title
                 correctionYear = (details?.year ?? parsed?.year).map(String.init) ?? ""
                 correcting = true
             }

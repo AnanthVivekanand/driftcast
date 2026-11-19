@@ -111,6 +111,12 @@ struct MediaInfo: Hashable, Sendable {
     /// Where the file's own clock starts. Transport streams often start hours in; everything
     /// else in Driftcast counts from the start of the film, so this is subtracted where it matters.
     var startTime: Double = 0
+    /// The title written into the file itself, often its release name
+    /// ("The.Sopranos.S04E07.1080p.BluRay.x265-RARBG"). A TV reading the file shows it.
+    var embeddedTitle: String? = nil
+    /// Where the end credits start, from the file's own chapter list ("End Credits",
+    /// "Abspann"), counted from the start of the film. Most files don't mark them.
+    var creditsStart: Double? = nil
 
     var summary: String {
         var parts: [String] = []
@@ -207,7 +213,7 @@ actor MediaProbe {
             guard let exe = FFmpeg.ffprobe else { throw FFmpegError.notFound }
             await limiter.acquire()
             do {
-                let data = try await FFmpeg.run(exe, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", url.path])
+                let data = try await FFmpeg.run(exe, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", url.path])
                 var info = try Self.parse(data)
                 if info.duration <= 0, let v = info.video { info.duration = await Self.measureDuration(exe, url, video: v) }
                 await limiter.release()
@@ -296,10 +302,34 @@ actor MediaProbe {
             }
         }
         let bitRate = Int(format["bit_rate"] as? String ?? "")
+        let formatTags = format["tags"] as? [String: Any] ?? [:]
+        let formatTitle = ((formatTags["title"] ?? formatTags["TITLE"]) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let startTime = Double(format["start_time"] as? String ?? "") ?? 0
         return MediaInfo(duration: duration, formatName: format["format_name"] as? String ?? "",
                          bitRate: bitRate, video: video, audio: audio, subtitles: subs,
-                         startTime: Double(format["start_time"] as? String ?? "") ?? 0)
+                         startTime: startTime, embeddedTitle: formatTitle,
+                         creditsStart: creditsStart(root["chapters"] as? [[String: Any]] ?? [],
+                                                    startTime: startTime, duration: duration))
     }
+
+    /// The start of the last chapter named for the credits, if it's in the second half: an
+    /// "Opening Credits" chapter near the start isn't the end.
+    static func creditsStart(_ chapters: [[String: Any]], startTime: Double, duration: Double) -> Double? {
+        let credits = chapters.last { chapter in
+            let tags = chapter["tags"] as? [String: Any] ?? [:]
+            let title = ((tags["title"] ?? tags["TITLE"]) as? String ?? "")
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            return creditsWords.contains { title.contains($0) }
+        }
+        guard let start = credits.flatMap({ Double($0["start_time"] as? String ?? "") }) else { return nil }
+        let at = start - startTime
+        return at > duration / 2 && at < duration ? at : nil
+    }
+
+    /// Chapter names for end credits, compared after folding case and accents.
+    private static let creditsWords = ["credit", "end title", "closing title", "abspann", "generique", "titoli di coda",
+                                       "aftiteling", "eftertext", "rulletekst", "lopputekst", "титры"]
 
     private static func parseRate(_ s: String?) -> Double? {
         guard let s else { return nil }

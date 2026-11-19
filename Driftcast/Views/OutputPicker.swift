@@ -15,10 +15,12 @@ struct OutputPicker: View {
                     Label("This Mac", systemImage: player.output == .local ? "checkmark" : "laptopcomputer")
                 }
                 Section("Chromecast") {
-                    if discovery.devices.isEmpty {
-                        Text(discovery.problem.map { "Can't search: \($0)" } ?? "Searching the network…")
+                    let screens = discovery.devices.filter { !$0.isAudioOnly }
+                    if screens.isEmpty {
+                        Text(discovery.problem.map { "Can't search: \($0)" }
+                             ?? (discovery.searchedAWhile ? "None found on this network" : "Searching the network…"))
                     }
-                    ForEach(discovery.devices.filter { !$0.isAudioOnly }) { device in
+                    ForEach(screens) { device in
                         deviceButton(device)
                     }
                 }
@@ -31,7 +33,7 @@ struct OutputPicker: View {
                 Section("AirPlay") {
                     Button {
                         player.selectOutput(.local)
-                        AirPlayPicker.shared.presentSoon()
+                        AirPlayPicker.shared.presentSoon(openVideoWindow: player.nowPlaying == nil ? nil : { player.showVideoWindow() })
                     } label: {
                         Label("Apple TV or AirPlay TV…", systemImage: "airplayvideo")
                     }
@@ -51,9 +53,18 @@ struct OutputPicker: View {
             .help("Choose where to play")
 
             if player.output == .local {
-                AirPlayButton(player: player.localTarget.player)
-                    .frame(width: 30, height: 22)
-                    .help("AirPlay to an Apple TV or AirPlay 2 TV")
+                Button {
+                    AirPlayPicker.shared.present(openVideoWindow: player.nowPlaying == nil ? nil : { player.showVideoWindow() })
+                } label: {
+                    Image(systemName: "airplayvideo")
+                        .foregroundStyle(player.isAirPlaying ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                }
+                .buttonStyle(.borderless)
+                .frame(width: 30, height: 22)
+                // The toolbar's own picker, unseen: the fallback when the video window's isn't there.
+                .background(AirPlayButton(player: player.localTarget.player).opacity(0).allowsHitTesting(false))
+                .help("AirPlay to an Apple TV or AirPlay 2 TV")
+                .accessibilityLabel("AirPlay")
             }
         }
     }
@@ -86,31 +97,57 @@ struct AirPlayButton: NSViewRepresentable {
     }
 }
 
-/// Only AVRoutePickerView can show the system's list of AirPlay devices, so the output menu's
-/// AirPlay item opens that list by clicking the toolbar's picker on the user's behalf.
+/// Opens the system's list of AirPlay devices. Only an AVRoutePickerView can show it, and only
+/// the one AVKit puts in the video window's own controls moves the video: a picker the app makes
+/// (the toolbar's) lists the same devices, but choosing a TV there leaves the video on the Mac
+/// (seen on macOS 26, also with `prioritizesVideoDevices` set like AVKit's). So the toolbar's
+/// AirPlay button and the output menus click the video window's button on the user's behalf.
 @MainActor
 final class AirPlayPicker {
     static let shared = AirPlayPicker()
+    /// The toolbar's own picker: the fallback when the video window has no AirPlay button
+    /// (nothing playing, or already AirPlaying, when the window shows the casting picture).
     weak var view: AVRoutePickerView?
 
-    /// Waits for the menu to close and, when switching away from a Chromecast, for the picker
-    /// to come back into the toolbar.
-    func presentSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.present() }
+    /// Waits for the menu to close and, when switching away from a Chromecast, for the player
+    /// to come back into the video window.
+    func presentSoon(openVideoWindow: (() -> Void)? = nil) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.present(openVideoWindow: openVideoWindow) }
     }
 
-    private func present() {
-        guard let view, view.window != nil, let button = Self.firstButton(in: view) else { return }
-        button.performClick(nil)
+    /// `openVideoWindow` is given when a video is loaded: with its window closed, the window is
+    /// opened first and its button clicked once it's there.
+    func present(openVideoWindow: (() -> Void)? = nil) {
+        if let button = Self.videoWindowButton() {
+            button.window?.makeKeyAndOrderFront(nil)
+            button.performClick(nil)
+        } else if let openVideoWindow, !PlaybackController.videoWindowIsOpen {
+            openVideoWindow()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.present() }
+        } else if let view, view.window != nil, let button = Self.firstButton(in: view) {
+            button.performClick(nil)
+        }
     }
 
-    private static func firstButton(in view: NSView) -> NSButton? {
+    /// The AirPlay button inside the video window's AVPlayerView. It stays in place and enabled
+    /// while the floating controls are faded out (only a parent's opacity changes).
+    private static func videoWindowButton() -> NSButton? {
+        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("video") == true && $0.isVisible && !$0.isMiniaturized }),
+              let content = window.contentView, let playerView = first(AVPlayerView.self, in: content),
+              let picker = first(AVRoutePickerView.self, in: playerView), !picker.isHiddenOrHasHiddenAncestor,
+              let button = firstButton(in: picker), button.isEnabled else { return nil }
+        return button
+    }
+
+    private static func first<T: NSView>(_ type: T.Type, in view: NSView) -> T? {
         for sub in view.subviews {
-            if let button = sub as? NSButton { return button }
-            if let found = firstButton(in: sub) { return found }
+            if let match = sub as? T { return match }
+            if let found = first(type, in: sub) { return found }
         }
         return nil
     }
+
+    private static func firstButton(in view: NSView) -> NSButton? { first(NSButton.self, in: view) }
 }
 
 /// The local/AirPlay picture. When AirPlay is active AVPlayerView shows its own placeholder.
@@ -171,7 +208,7 @@ struct VideoWindow: View {
             // Opened by the app when a video starts, never brought back by macOS at launch.
             window.isRestorable = false
         })
-        .navigationTitle(player.output == .local ? (player.nowPlaying?.title ?? "Video") : "Video")
+        .navigationTitle(player.output == .local ? (player.nowPlaying?.displayName ?? "Video") : "Video")
     }
 }
 

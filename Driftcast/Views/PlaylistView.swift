@@ -67,7 +67,9 @@ struct PlaylistView: View {
             .navigationTitle(playlist.name)
             .navigationSubtitle(playlist.items.count == 1 ? "1 video" : "\(playlist.items.count) videos")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                // Beside the playlist's name, the list it adds to, rather than with the
+                // playback controls on the right.
+                ToolbarItem(placement: .navigation) {
                     Button { library.presentOpenPanel(into: playlist.id) } label: {
                         Label("Add Videos", systemImage: "plus")
                     }
@@ -238,12 +240,8 @@ struct MediaRow: View {
                     if isCurrent {
                         Image(systemName: "speaker.wave.2.fill").foregroundStyle(.tint).font(.caption)
                     }
-                    Text(item.title)
+                    TitleLine(title: item.parsedTitle)
                         .fontWeight(isCurrent ? .semibold : .regular)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    WatchedBar(fraction: watchedFraction)
-                        .help(isWatched ? "Watched" : watchedFraction > 0 ? "\(Int((watchedFraction * 100).rounded()))% watched" : "Not watched yet")
                 }
                 Text(detail)
                     .font(.caption)
@@ -256,10 +254,19 @@ struct MediaRow: View {
                     .foregroundStyle(.secondary)
                     .help("Watched")
             }
-            if let d = info?.duration, d > 0 {
-                Text(formatTime(d))
+            // The length over the watched bar, both against the right edge, so the bars form
+            // one column down the list instead of ending wherever each name ends. Each sits
+            // level with a line of text: the length with the name, the bar with the detail line.
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(length ?? " ")   // a space holds the line until the length is known
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                Text(" ").font(.caption).hidden()
+                    .frame(width: WatchedBar.width)
+                    .overlay {
+                        WatchedBar(fraction: watchedFraction, finished: isWatched)
+                            .help(isWatched ? "Watched" : watchedFraction > 0 ? "\(Int((watchedFraction * 100).rounded()))% watched" : "Not watched yet")
+                    }
             }
         }
         .padding(.vertical, 3)
@@ -287,6 +294,11 @@ struct MediaRow: View {
 
     private var isWatched: Bool { library.watched.contains(item.url.path) }
 
+    private var length: String? {
+        guard let d = info?.duration, d > 0 else { return nil }
+        return formatTime(d)
+    }
+
     /// 0 for a video that hasn't been started, 1 for one watched to the end.
     private var watchedFraction: Double {
         isWatched ? 1 : (library.progress[item.url.path]?.fraction ?? 0)
@@ -297,10 +309,16 @@ struct MediaRow: View {
         if failed { return "Couldn't read this file" }
         guard let info else { return item.url.deletingLastPathComponent().lastPathComponent }
         var parts: [String] = []
-        if let p = library.progress[item.url.path] { parts.append("\(formatTime(max(0, p.duration - p.position))) left") }
+        // Watched past the start of the credits: the time still left would only count credits.
+        if isWatched {
+            parts.append("Finished")
+        } else if let p = library.progress[item.url.path] {
+            parts.append("\(formatTime(max(0, p.duration - p.position))) left")
+        }
         if let details {
-            if details.isEpisode, let label = details.episodeLabel {
-                parts.append(details.episodeTitle.map { "\(label): \($0)" } ?? label)
+            if details.isEpisode {
+                // The title line already says "S4 E7"; this line names the episode.
+                if let name = details.episodeTitle { parts.append(name) }
             } else if let year = details.year {
                 parts.append(String(year))
             }
@@ -311,17 +329,21 @@ struct MediaRow: View {
     }
 }
 
-/// The small bar beside a title showing how much of the video has been watched.
+/// The small bar under a video's length showing how much of it has been watched: the accent
+/// color while there's more to see, green once it's finished (gray would sink into a finished
+/// row's fade and look like an empty bar).
 private struct WatchedBar: View {
+    static let width: CGFloat = 56
     let fraction: Double
+    let finished: Bool
 
     var body: some View {
         ZStack(alignment: .leading) {
             Capsule().fill(.quaternary)
-            Capsule().fill(Color.accentColor)
-                .frame(width: 56 * min(1, max(0, fraction)))
+            Capsule().fill(finished ? Color.green : Color.accentColor)
+                .frame(width: Self.width * min(1, max(0, fraction)))
         }
-        .frame(width: 56, height: 4)
+        .frame(width: Self.width, height: 4)
         .accessibilityLabel("Watched")
         .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
     }

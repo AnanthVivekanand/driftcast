@@ -22,6 +22,9 @@ enum SubtitleSize {
         return ((clamped / step).rounded() * step * 100).rounded() / 100
     }
 
+    /// Shown beside the size controls while AirPlaying: the TV draws AirPlay subtitles itself.
+    static let airPlayNote = "The AirPlay TV sets the size: change it in the TV's caption settings"
+
     static func label(_ value: Double) -> String { "\(Int((normalized(value) * 100).rounded()))%" }
 
     static func increase() { current = current + step }

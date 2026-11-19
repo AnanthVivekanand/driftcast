@@ -18,6 +18,7 @@ final class AVPlayerTarget: PlaybackTarget {
     private var endObserver: NSObjectProtocol?
     private var diagnostics: [NSObjectProtocol] = []
     private var waitingObservation: NSKeyValueObservation?
+    private var redrawSubtitles: Task<Void, Never>?
     private static let log = Logger(subsystem: "com.leechsoftware.driftcast", category: "player")
 
     init() {
@@ -65,7 +66,22 @@ final class AVPlayerTarget: PlaybackTarget {
     }
 
     func setSubtitleScale(_ scale: Double) {
-        player.currentItem?.textStyleRules = Self.textStyleRules(scale: scale)
+        guard let item = player.currentItem else { return }
+        item.textStyleRules = Self.textStyleRules(scale: scale)
+        // AVPlayer uses the new size from the next line on; the line already showing keeps the
+        // old one. Choosing the same subtitle track again redraws it at once (checked by
+        // capturing the picture). Waits for the slider to settle; not with AirPlay, where the TV
+        // draws the subtitles at its own size.
+        redrawSubtitles?.cancel()
+        guard !player.isExternalPlaybackActive else { return }
+        redrawSubtitles = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self, self.player.currentItem === item,
+                  let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                  let chosen = item.currentMediaSelection.selectedMediaOption(in: group) else { return }
+            item.select(nil, in: group)
+            item.select(chosen, in: group)
+        }
     }
 
     func load(_ r: LoadRequest) async throws {

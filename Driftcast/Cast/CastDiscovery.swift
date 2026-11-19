@@ -45,8 +45,13 @@ final class CastDiscovery: ObservableObject {
     @Published var devices: [CastDeviceInfo] = []
     @Published var isBrowsing = false
     @Published var problem: String?
+    /// True once a search has run long enough that finding nothing means there's nothing to
+    /// find. Chromecasts answer within a second or two; a menu still "searching" minutes later
+    /// on a network without one says nothing useful.
+    @Published private(set) var searchedAWhile = false
 
     private var browser: NWBrowser?
+    private var settle: Task<Void, Never>?
 
     func start() {
         guard browser == nil else { return }
@@ -82,6 +87,13 @@ final class CastDiscovery: ObservableObject {
         }
         browser = b
         b.start(queue: .main)
+        searchedAWhile = false
+        settle?.cancel()
+        settle = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.searchedAWhile = true
+        }
     }
 
     func restart() {

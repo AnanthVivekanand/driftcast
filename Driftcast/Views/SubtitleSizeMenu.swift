@@ -3,10 +3,21 @@ import SwiftUI
 
 /// The Subtitle Size part of the popup subtitle menus (the playback bar and the video window's
 /// footer). SwiftUI menus can't hold a slider, so these offer Larger, Smaller and the presets.
+/// Hidden while AirPlaying, with a line saying why in its place: the TV draws the subtitles at
+/// its own size.
 struct SubtitleSizeMenu: View {
+    @EnvironmentObject private var player: PlaybackController
     @AppStorage(Prefs.subtitleScale) private var scale = 1.0
 
     var body: some View {
+        if player.isAirPlaying {
+            Text(SubtitleSize.airPlayNote)
+        } else {
+            sizeMenu
+        }
+    }
+
+    private var sizeMenu: some View {
         Menu("Subtitle Size: \(SubtitleSize.label(scale))") {
             Button("Larger") { SubtitleSize.increase() }.disabled(!SubtitleSize.canIncrease)
             Button("Smaller") { SubtitleSize.decrease() }.disabled(!SubtitleSize.canDecrease)
@@ -82,6 +93,11 @@ final class SubtitleSizeMenuItem {
     }
 
     private var reinsertScheduled = false
+
+    /// True while AirPlaying, when the TV sets the subtitle size and the slider would do nothing.
+    var isHidden = false {
+        didSet { header.isHidden = isHidden; item.isHidden = isHidden }
+    }
 
     /// Call once at launch.
     func install() {

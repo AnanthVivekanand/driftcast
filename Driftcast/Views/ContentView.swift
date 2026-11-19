@@ -33,6 +33,7 @@ struct ContentView: View {
         .onChange(of: player.videoWindowRequest) { _ in
             openWindow(id: "video")
         }
+        .onChange(of: player.isAirPlaying) { SubtitleSizeMenuItem.shared.isHidden = $0 }
         .overlay(alignment: .top) {
             if !FFmpeg.isAvailable {
                 FFmpegMissingBanner()
