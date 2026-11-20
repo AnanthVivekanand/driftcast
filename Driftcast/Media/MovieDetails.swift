@@ -58,10 +58,17 @@ struct MovieDetails: Codable, Hashable, Sendable {
         return m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
     }
 
-    /// "IMDb 8.3" for a playlist row: the first rating, trimmed of its scale.
-    var shortRating: String? {
-        guard let r = ratings.first else { return nil }
-        let value = r.value.split(separator: "/").first.map(String.init) ?? r.value
-        return "\(r.source) \(value)"
+    /// The year for a playlist row: a film's year, or the year an episode was first shown.
+    /// An episode with no date has none, since the show's own year is that of its first season.
+    var listYear: Int? {
+        guard isEpisode else { return year }
+        return airDate.flatMap(Self.year(in:))
+    }
+
+    /// The year in a date as a source writes it: "2002-11-03", "03 Nov 2002".
+    static func year(in date: String) -> Int? {
+        date.split(whereSeparator: { !$0.isNumber })
+            .compactMap { $0.count == 4 ? Int($0) : nil }
+            .first { (1880...2100).contains($0) }
     }
 }

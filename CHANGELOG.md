@@ -52,9 +52,29 @@ earlier versions are on the [releases page](https://github.com/leechsoftware/dri
 - **An episode's name on its own line:** the details panel wrote "Season 4, Episode 7:
   Watching Too Much Television" as one line, which broke in the middle of the name. The name
   is now under the season and episode.
+- **The year in place of the score on each row:** a video's row in the playlist ended with a
+  review score and where it came from ("TVmaze 8.8", "IMDb 8.3"). It now shows the year: a
+  film's year, and for an episode the year it was first shown. Scores are still in the
+  details panel.
+- **A taller window the first time Driftcast opens:** tall enough that the details panel
+  shows an episode through its closed captions notice without scrolling. A window you have
+  already sized keeps its size.
 
 ### Fixed
 
+- **Videos added to a playlist could vanish when two copies of Driftcast were open:** macOS
+  opens a double-clicked video with the newest copy of Driftcast it knows of, even while an
+  older copy from another folder is already running: one in Applications and one in
+  Downloads, say, or one still on its disk image. The two windows look the same. Each copy
+  kept its own list and saved the whole of it, so each save erased what the other had added,
+  and videos just dropped into one window were missing from the other and gone at the next
+  launch. Only one copy runs now: the one being opened asks the other to save and quit, waits
+  for it, and then reads the playlists and opens what was double-clicked. Versions before
+  1.1.2 don't do this, so throw older copies away: one opened after 1.1.2 still runs beside
+  it. If playlists are ever overwritten that way, the error log now says so.
+- **Saving the playlists:** saves are written one at a time in the order they were made, so
+  an earlier list can't land on top of a later one as Driftcast quits. A save that fails is
+  written to the error log; it used to pass without a word.
 - **The caption bar under the video was cut off:** the video window could be made, or come
   back, short enough that the bar saying which captions a video has lost its lower half. The
   window's smallest size didn't count its title bar. It does now, and a window that is too

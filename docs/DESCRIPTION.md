@@ -96,7 +96,9 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   the selected or playing video's poster, title, year, running time, age rating, network,
   genres, ratings, director, writers, cast and plot; for an episode, the show's details plus
   the season and episode number, the episode's name (since 1.1.2 on its own line under
-  them, not after a colon), air date, still and synopsis. The
+  them, not after a colon), air date, still and synopsis. The main window opens 980 by 670
+  points the first time (620 high before 1.1.2), so that the panel shows an episode through
+  its closed captions notice without scrolling; after that macOS remembers the size. The
   panel's own header has a button that folds it away (⌥⌘I brings it back). It is a
   fixed-width column inside the window, so opening it never makes the window bigger; the
   playlist gives up the room and the panel scrolls, with a floating arrow at its foot that
@@ -146,8 +148,10 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - Rows look up their details as soon as they appear. A video played the moment it is added
   waits up to six seconds for that lookup, so the title card and the Chromecast's screen get
   the real poster rather than a frame; the lookup carries on in the background either way.
-- Playlist rows show the year and the first rating ("1995 · IMDb 8.3") or, for an episode,
-  its name (the number is already in the title line); the Chromecast shows the poster, with
+- Playlist rows show a film's year ("1995") or, for an episode, its name and the year it was
+  first shown ("Pine Barrens · 2001"; the number is already in the title line). Until 1.1.2
+  a row also showed the first review score ("IMDb 8.3", "TVmaze 8.8"); scores are now in the
+  details panel only. The Chromecast shows the poster, with
   the film's year and director or the episode's show, number and name, on its loading and
   pause screens.
 - **A title card when a video starts** (switchable): five seconds of the
@@ -374,7 +378,9 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   can't be moved to the Trash, a failed subtitle search or download, a failed update, a failed
   Chromecast search, a poster card that couldn't be made (ffmpeg can't make one for Dolby
   Digital Plus in 6.1 or 7.1; the film plays without it), and a watched list that can't be
-  written. Help > Show Error Log shows the
+  written. New in 1.1.2: playlists that can't be saved, saved playlists found changed by
+  something other than this copy, and another copy of Driftcast that was closed, or made way
+  for, at launch. Help > Show Error Log shows the
   file in the Finder. Past 512 KB the older half is dropped.
 - The details panel's File section shows a file's streams and, for the current output
   device, exactly what would be passed through, converted or drawn in, and why.
@@ -599,7 +605,22 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - `library.json` in `~/Library/Application Support/Driftcast/` holds playlists (id, name,
   items with id, URL and attached subtitle files), progress per file path (position, duration,
   updated), the set of watched paths and the selected playlist. Writes are coalesced (0.5 s)
-  and forced on quit.
+  and forced on quit. Since 1.1.2 they go through one queue, so they land in the order they
+  were made and the write at quit waits for one already under way; a write that fails goes to
+  the error log.
+- **One copy at a time** (new in 1.1.2): every write replaces the whole file with the list
+  the running copy holds, so two copies open together each erased what the other had added.
+  That happens without anyone meaning it: macOS opens a double-clicked video with the newest
+  copy of Driftcast it knows of, in whatever folder, even while another copy is running (one
+  in Applications and one in Downloads, or one still on its disk image). The copy being
+  opened now asks any copy already running to quit, which makes it save its playlists and
+  the place in what it was playing, waits up to six seconds for it to go, and only then
+  reads the playlists. If the other copy doesn't quit (it has a question on screen), the new
+  one brings it forward and quits instead, touching nothing. Both are noted in the error
+  log. A copy that finds the file changed by something else notes that too, once. Versions
+  before 1.1.2 know nothing of this, so an older copy opened after a newer one still runs
+  beside it. `-AllowSecondCopy YES` on the command line lets a copy start beside another,
+  for a test run with its own data folder.
 - Progress rules: a video is finished where its end credits start. When the file has a
   chapter named for them in its second half ("End Credits", "Credits", "Abspann",
   "Générique", "Titoli di coda" and other languages), that chapter's start less 10 seconds
@@ -667,6 +688,11 @@ local-network permission.
   dual-layer (profile 7) files have not been tested.
 - AirPlay to a device the Mac cannot reach on its chosen address (two networks, VPN, firewall)
   shows the warning banner but cannot be fixed from inside the app.
+- **One copy at a time** was tried with two hidden test copies under a test identifier: the
+  running one saved and quit and the new one carried on; a copy frozen so it couldn't answer
+  was left alone and the new one quit. It has not been tried by double-clicking a video in
+  the Finder with two real copies installed, and a copy older than 1.1.2 opened second is
+  not stopped.
 
 ---
 

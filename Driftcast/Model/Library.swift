@@ -49,6 +49,58 @@ struct WatchProgress: Codable, Hashable {
     }
 }
 
+/// The file the library is kept in. Reading and writing go through one queue, so writes land
+/// in the order they were asked for and an earlier list can't end up on top of a later one.
+///
+/// Every write replaces the whole file with this copy's list. Driftcast runs as one copy
+/// (`SingleCopy`), but an older version opened beside it knows nothing of that, and whatever
+/// it wrote is gone at this copy's next save. The file's date shows when something else has
+/// written it; the first time goes to the error log, as does a save that fails.
+final class LibraryFile: @unchecked Sendable {
+    let url: URL
+    let queue = DispatchQueue(label: "com.leechsoftware.driftcast.library", qos: .utility)
+    /// The file's date when this copy last read or wrote it; nil when there was no file.
+    private var seen: Date?
+    private var reportedAnother = false
+    private var failing = false
+
+    init(url: URL) { self.url = url }
+
+    private var modified: Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    func read() -> Data? {
+        queue.sync {
+            let data = try? Data(contentsOf: url)
+            seen = modified
+            return data
+        }
+    }
+
+    /// The file as it now stands is this copy's doing (it was just moved aside, say).
+    func noteCurrent() { queue.sync { seen = modified } }
+
+    /// Only on `queue`.
+    func write(_ contents: () throws -> Data) {
+        do {
+            let data = try contents()
+            if !reportedAnother, modified != seen {
+                reportedAnother = true
+                ErrorLog.record("Playlists", "The saved playlists were changed by something other than this copy of Driftcast, most likely a second copy open at the same time. This copy's list has replaced them.")
+            }
+            try data.write(to: url, options: .atomic)
+            seen = modified
+            failing = false
+        } catch {
+            // Said once, not at every save while it lasts: the place in a video is saved
+            // every few seconds.
+            if !failing { ErrorLog.record("Playlists", "saving them", error: error) }
+            failing = true
+        }
+    }
+}
+
 /// Playlists plus last-position tracking, persisted as JSON in Application Support.
 @MainActor
 final class Library: ObservableObject {
@@ -72,8 +124,10 @@ final class Library: ObservableObject {
     }
 
     private var saveWork: DispatchWorkItem?
+    private let file: LibraryFile
 
     init() {
+        file = LibraryFile(url: Self.storeURL)
         load()
         if playlists.isEmpty { playlists = [Playlist(name: "Playlist")] }
         if selection == nil || !playlists.contains(where: { $0.id == selection }) { selection = playlists.first?.id }
@@ -91,12 +145,13 @@ final class Library: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: Self.storeURL) else { return }
+        guard let data = file.read() else { return }
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
             // Kept aside rather than overwritten by the empty library this run starts with.
             let aside = Self.storeURL.deletingPathExtension().appendingPathExtension("unreadable.json")
             try? FileManager.default.removeItem(at: aside)
             try? FileManager.default.moveItem(at: Self.storeURL, to: aside)
+            file.noteCurrent()
             return
         }
         playlists = stored.playlists
@@ -109,20 +164,21 @@ final class Library: ObservableObject {
     func save() {
         saveWork?.cancel()
         let snapshot = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
-        let work = DispatchWorkItem {
-            if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: Self.storeURL, options: .atomic) }
-        }
+        let file = file
+        let work = DispatchWorkItem { file.write { try JSONEncoder().encode(snapshot) } }
         saveWork = work
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
+        file.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     /// Writes immediately. Used when quitting, where the delayed write in `save()` would never
-    /// run and the last resume position or playlist edit would be lost.
+    /// run and the last resume position or playlist edit would be lost. It waits its turn
+    /// behind a delayed write that has already begun, so that older list can't land on top.
     func saveNow() {
         saveWork?.cancel()
         saveWork = nil
         let snapshot = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
-        if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: Self.storeURL, options: .atomic) }
+        let file = file
+        file.queue.sync { file.write { try JSONEncoder().encode(snapshot) } }
     }
 
     // MARK: Playlists

@@ -660,6 +660,76 @@ do {
     for name in ["Wire", "Wire S1", "Wire S2", "Wire S3"] { lib.playlists.filter { $0.name == name }.forEach { lib.deletePlaylist($0.id) } }
 }
 
+// One copy of the app, two copies at once, and saves that fail.
+do {
+    // Helpers sit inside the block, as the others in this file do.
+    @MainActor func listed(_ library: Library, _ playlist: String) -> [String] {
+        library.playlists.first { $0.name == playlist }?.items.map(\.baseName) ?? []
+    }
+    func logged(_ phrase: String) -> Int {
+        ErrorLog.flush()
+        return ((try? String(contentsOf: ErrorLog.url, encoding: .utf8)) ?? "").components(separatedBy: phrase).count - 1
+    }
+
+    // As reported: videos dropped in, another opened by double-clicking, then paused. In one copy
+    // of the app nothing leaves the list, on screen or in what is saved.
+    do {
+        let pl = lib.newPlaylist(named: "harness-pause")
+        lib.add([mp4, mkv], to: pl)                                  // dropped
+        let opened = lib.addToPlay([hdr], to: pl)                    // another, double-clicked
+        lib.updateProgress(for: hdr, position: 60, duration: 600)    // what pausing saves
+        lib.save()
+        lib.saveNow()
+        let reread = Library()
+        check(opened != nil && listed(lib, "harness-pause").count == 3 && listed(reread, "harness-pause") == listed(lib, "harness-pause"),
+              "dropping, opening another and pausing keeps every video, in the list and on disk: \(listed(reread, "harness-pause"))")
+        lib.deletePlaylist(pl)
+        lib.saveNow()
+    }
+
+    // Two copies open at once. Each writes its whole list, so the one that saves last wins and
+    // what was dropped into the other is gone from the file. This is why only one copy runs
+    // (SingleCopy). A copy that finds the file changed under it says so in the error log, once.
+    do {
+        let pl = lib.newPlaylist(named: "harness-copies")
+        lib.saveNow()
+        let other = Library()                           // a second copy, open since before the drop
+        let before = logged("most likely a second copy")
+        lib.add([mp4, mkv], to: pl)                     // dropped into the first
+        lib.saveNow()
+        other.add([hdr], to: other.playlists.first { $0.name == "harness-copies" }?.id)
+        other.saveNow()                                 // the second saves: its list has no dropped videos
+        check(listed(Library(), "harness-copies") == ["hdr"], "a second copy's save replaces the list, losing what was dropped into the first: \(listed(Library(), "harness-copies"))")
+        check(logged("most likely a second copy") == before + 1, "the copy that wrote over another's list says so in the error log")
+        other.saveNow()
+        check(logged("most likely a second copy") == before + 1, "and says it once, not at every save")
+        lib.saveNow()
+        check(listed(Library(), "harness-copies") == ["simple", "Test.Movie.2024.1080p"] && logged("most likely a second copy") == before + 2,
+              "the first copy's next save puts its own list back, and it notes the change too: \(listed(Library(), "harness-copies"))")
+        lib.deletePlaylist(pl)
+        lib.saveNow()
+        let quiet = logged("most likely a second copy")
+        lib.save(); lib.saveNow(); lib.saveNow()
+        check(logged("most likely a second copy") == quiet, "a copy on its own never reports another")
+
+        let t0 = Date()
+        check(SingleCopy.replaced([(1, t0.addingTimeInterval(-60)), (2, nil), (3, t0.addingTimeInterval(5))], by: t0) == [1, 2],
+              "the copy being opened replaces the ones open before it, not one opened after it")
+        check(SingleCopy.replaced([(4, t0)], by: t0).isEmpty, "two copies starting in the same moment don't each close the other")
+        check(SingleCopy.takeOver(), "with no other copy running, the one opened just starts")
+    }
+
+    // A save that fails is written to the error log, once while it lasts.
+    do {
+        let before = logged("Playlists: saving them")
+        let nowhere = LibraryFile(url: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/library.json"))
+        nowhere.queue.sync { nowhere.write { Data("{}".utf8) }; nowhere.write { Data("{}".utf8) } }
+        struct Refused: Error {}
+        nowhere.queue.sync { nowhere.write { throw Refused() } }
+        check(logged("Playlists: saving them") == before + 1, "a save that fails is logged once (\(logged("Playlists: saving them") - before))")
+    }
+}
+
 }
 // Language codes
 check(Lang.isLanguageCode("en") && Lang.isLanguageCode("ger") && !Lang.isLanguageCode("up") && !Lang.isLanguageCode("1080p"), "language code check (up/1080p rejected)")
@@ -900,9 +970,22 @@ let omdbJSON = """
 """
 let omdb = OMDbClient.parse(Data(omdbJSON.utf8), wanted: heat)
 check(omdb?.ratings.map(\.source) == ["IMDb", "Rotten Tomatoes", "Metacritic"] && omdb?.cast.count == 3 && omdb?.writers == ["Michael Mann"]
-      && omdb?.runtimeMinutes == 170 && omdb?.link?.absoluteString == "https://www.imdb.com/title/tt0113277/" && omdb?.shortRating == "IMDb 8.3",
+      && omdb?.runtimeMinutes == 170 && omdb?.link?.absoluteString == "https://www.imdb.com/title/tt0113277/" && omdb?.ratings.first?.value == "8.3/10",
       "OMDb parsed with three ratings: \(omdb?.ratings.map(\.value) ?? [])")
 check(OMDbClient.parse(Data("{\"Response\":\"False\",\"Error\":\"Movie not found!\"}".utf8), wanted: heat) == nil, "OMDb 'not found' gives nothing")
+
+// The year on a playlist row: a film's own; for an episode the year it was first shown, not
+// the year the show began. No review score there.
+check(omdb?.listYear == 1995, "a film's row shows its year (\(omdb?.listYear.map(String.init) ?? "nil"))")
+check(episode.year != 2001 && episode.listYear == 2001, "an episode's row shows the year it aired, not the show's (\(episode.year.map(String.init) ?? "nil") -> \(episode.listYear.map(String.init) ?? "nil"))")
+do {
+    var undated = episode
+    undated.airDate = nil
+    check(undated.listYear == nil, "an episode with no air date shows no year rather than the show's")
+    check(MovieDetails.year(in: "03 Nov 2002") == 2002 && MovieDetails.year(in: "2002-11-03") == 2002
+          && MovieDetails.year(in: "N/A") == nil && MovieDetails.year(in: "") == nil && MovieDetails.year(in: "0000-00-00") == nil,
+          "the year is read from a date however the source writes it")
+}
 
 // Update check
 check(AppVersion.isNewer("v1.10", than: "1.9") && AppVersion.isNewer("1.0.1", than: "1.0") && !AppVersion.isNewer("1.2", than: "1.2.0")

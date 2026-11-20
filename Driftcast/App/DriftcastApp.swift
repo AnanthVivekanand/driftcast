@@ -9,6 +9,9 @@ struct DriftcastApp: App {
 
     init() {
         Prefs.register()
+        // One copy at a time: a copy already open is asked to save and quit before this one
+        // reads the playlists (see SingleCopy). If it stays, this one leaves instead.
+        if !SingleCopy.takeOver() { exit(0) }
         StreamSession.cleanTemporaryFiles()
         MediaServer.shared.start()
         let library = Library()
@@ -29,7 +32,9 @@ struct DriftcastApp: App {
                 .environmentObject(player)
                 .onAppear { discovery.start(); Updater.shared.start() }
         }
-        .defaultSize(width: 980, height: 620)
+        // The first time only (macOS remembers the size after that). Tall enough that the
+        // details panel, when opened, shows an episode through its closed captions notice.
+        .defaultSize(width: 980, height: 670)
         .commands {
             AboutCommands()
             PlaybackCommands(player: player, library: library)

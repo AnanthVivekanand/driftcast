@@ -344,7 +344,7 @@ struct MediaRow: View {
             } catch {
                 failed = true
             }
-            // Year and rating for the detail line; cached answers come back at once, new ones
+            // The year and an episode's name for the detail line; cached answers come back at once, new ones
             // are fetched no faster than the services allow.
             details = await MetadataLookup.shared.cached(for: item.url)
             if details == nil, MetadataLookup.isEnabled, !Task.isCancelled {
@@ -377,13 +377,11 @@ struct MediaRow: View {
             parts.append("\(formatTime(max(0, p.duration - p.position))) left")
         }
         if let details {
-            if details.isEpisode {
-                // The title line already says "S4 E7"; this line names the episode.
-                if let name = details.episodeTitle { parts.append(name) }
-            } else if let year = details.year {
-                parts.append(String(year))
-            }
-            if let rating = details.shortRating { parts.append(rating) }
+            // The title line already says "S4 E7"; this line names the episode.
+            if details.isEpisode, let name = details.episodeTitle { parts.append(name) }
+            // When it came out: a film's year, the year an episode was first shown. Review
+            // scores are in the details panel, with where each comes from.
+            if let year = details.listYear { parts.append(String(year)) }
         }
         parts.append(info.summary)
         return parts.joined(separator: " · ")
