@@ -1,12 +1,12 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// The list of videos played: the file, its cleaned name, and when. Two files side by side in the
-/// Movies folder, one to read, named "Videos I have watched on Driftcast", and under it the
-/// same list as JSON for anything that wants to work with it.
+/// The list of videos played: the file, its cleaned name, and when. It is kept inside
+/// Driftcast's own data folder, where nobody looking through the person's folders comes across
+/// it, and File > Export Watched Videos… is how it comes out, as a spreadsheet.
 ///
-/// The Movies folder because an app can write there without asking; the Documents, Desktop
-/// and Downloads folders each put up a permission question first.
+/// Version 1.1.1 kept it as two files in the Movies folder, in plain view. Those are taken in
+/// and removed from there (`takeIn`).
 enum WatchedList {
     struct Entry: Equatable {
         var title: String
@@ -14,10 +14,16 @@ enum WatchedList {
         var played: Date
     }
 
+    /// What the exported spreadsheet is called, and what 1.1.1's files in Movies were called.
     static let name = "Videos I have watched on Driftcast"
-    static var folder: URL { FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0] }
-    static func textURL(in folder: URL = folder) -> URL { folder.appendingPathComponent(name + ".txt") }
-    static func jsonURL(in folder: URL = folder) -> URL { folder.appendingPathComponent(name + ".json") }
+    static var folder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Driftcast", isDirectory: true)
+    }
+    static func jsonURL(in folder: URL = folder) -> URL { folder.appendingPathComponent("watched-videos.json") }
+    /// Where a list that can't all be read is copied before it is written over.
+    static func unreadableURL(in folder: URL = folder) -> URL { folder.appendingPathComponent("watched-videos (unreadable).json") }
+    static var moviesFolder: URL { FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0] }
 
     /// Starting the same video again this soon is the same viewing, not another one: stopping
     /// to change the TV, or picking it up after a failed start.
@@ -26,8 +32,9 @@ enum WatchedList {
     private static let queue = DispatchQueue(label: "com.leechsoftware.driftcast.watchedlist")
 
     /// Notes a video that has started playing. Off the main thread; a failure goes to the error log.
-    static func record(title: String, filename: String, played: Date = Date(), in folder: URL = folder) {
+    static func record(title: String, filename: String, played: Date = Date()) {
         queue.async {
+            settle()
             do { try add(Entry(title: title, filename: filename, played: played), in: folder) }
             catch { ErrorLog.record("Watched list", error: error) }
         }
@@ -36,42 +43,80 @@ enum WatchedList {
     /// Waits for entries still being written.
     static func flush() { queue.sync {} }
 
+    /// At launch: 1.1.1's list leaves the Movies folder without waiting for a video to play.
+    static func takeInOldList() { queue.async { settle() } }
+
+    private static func settle() {
+        do { try takeIn(from: moviesFolder, to: folder) }
+        catch { ErrorLog.record("Watched list", "moving it out of the Movies folder", error: error) }
+    }
+
     /// The list so far, oldest first. Empty when nothing has been played or the file can't be read.
     static func entries(in folder: URL = folder) -> [Entry] {
         flush()
         return (try? Data(contentsOf: jsonURL(in: folder))).flatMap(decode)?.entries ?? []
     }
 
-    /// Adds an entry and rewrites both files. False when it was the same viewing as the last one.
+    /// Adds an entry and rewrites the list. False when it was the same viewing as the last one.
     @discardableResult
     static func add(_ entry: Entry, in folder: URL) throws -> Bool {
-        let fm = FileManager.default
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        let json = jsonURL(in: folder)
-        var entries: [Entry] = []
-        if let data = try? Data(contentsOf: json) {
-            let read = decode(data)
-            entries = read?.entries ?? []
-            if read?.complete != true {
-                // Edited into something that can't all be read: a copy is kept beside it, since
-                // the rewrite below holds only the entries that could be.
-                let aside = folder.appendingPathComponent(name + " (unreadable).json")
-                try? fm.removeItem(at: aside)
-                try fm.copyItem(at: json, to: aside)
-            }
-        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var entries = try load(in: folder)
         if let last = entries.last, last.filename == entry.filename,
            abs(entry.played.timeIntervalSince(last.played)) < sameViewing { return false }
         entries.append(entry)
-        try Data(encode(entries).utf8).write(to: json, options: .atomic)
-        let text = textURL(in: folder)
-        try Data(self.text(entries).utf8).write(to: text, options: .atomic)
-        // Without its ".txt" the readable file shows as just its name, and sorts above the JSON.
-        try? fm.setAttributes([.extensionHidden: true], ofItemAtPath: text.path)
+        try Data(encode(entries).utf8).write(to: jsonURL(in: folder), options: .atomic)
         return true
     }
 
-    // MARK: The three forms
+    /// The entries of the list in `folder`. When the file there can't all be read, a copy of
+    /// it is kept beside it first, since what is written next holds only the entries that could be.
+    private static func load(in folder: URL) throws -> [Entry] {
+        let json = jsonURL(in: folder)
+        guard let data = try? Data(contentsOf: json) else { return [] }
+        let read = decode(data)
+        if read?.complete != true {
+            let aside = unreadableURL(in: folder)
+            try? FileManager.default.removeItem(at: aside)
+            try FileManager.default.copyItem(at: json, to: aside)
+        }
+        return read?.entries ?? []
+    }
+
+    /// Takes in the list that version 1.1.1 kept in `old` (the Movies folder) and removes it
+    /// from there, so nothing about what was watched is left in view. Its entries join any
+    /// already in `folder`, in the order played. What was read in full is deleted; a file that
+    /// couldn't all be read is moved into `folder` whole, out of view and not lost.
+    static func takeIn(from old: URL, to folder: URL) throws {
+        let fm = FileManager.default
+        let oldJSON = old.appendingPathComponent(name + ".json")
+        let oldText = old.appendingPathComponent(name + ".txt")
+        let oldAside = old.appendingPathComponent(name + " (unreadable).json")
+        guard [oldJSON, oldText, oldAside].contains(where: { fm.fileExists(atPath: $0.path) }) else { return }
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        var absorbed = false
+        if let read = (try? Data(contentsOf: oldJSON)).flatMap(decode) {
+            var all = read.entries
+            all += try load(in: folder).filter { !all.contains($0) }
+            all.sort { $0.played < $1.played }
+            try Data(encode(all).utf8).write(to: jsonURL(in: folder), options: .atomic)
+            absorbed = read.complete
+        }
+        let kept = [(oldJSON, "watched-videos (from Movies).json"), (oldText, "watched-videos (from Movies).txt"),
+                    (oldAside, "watched-videos (from Movies, unreadable).json")]
+        for (file, keptAs) in kept where fm.fileExists(atPath: file.path) {
+            if absorbed, file != oldAside {
+                try fm.removeItem(at: file)
+            } else {
+                let to = folder.appendingPathComponent(keptAs)
+                try? fm.removeItem(at: to)
+                try fm.moveItem(at: file, to: to)
+            }
+        }
+    }
+
+    // MARK: The two forms
 
     /// JSON written by hand so the keys keep their order: filename, title, played.
     static func encode(_ entries: [Entry]) -> String {
@@ -94,18 +139,6 @@ enum WatchedList {
             return Entry(title: title, filename: filename, played: played)
         }
         return (entries, entries.count == rows.count)
-    }
-
-    /// The file to read: newest first, three lines a video (the file, its cleaned name, when).
-    static func text(_ entries: [Entry]) -> String {
-        let when = DateFormatter()
-        when.dateStyle = .medium
-        when.timeStyle = .short
-        var out = "\(name)\nNewest first. The same list is in the JSON file next to this one.\n"
-        for e in entries.reversed() {
-            out += "\n\(e.filename)\n    \(e.title)\n    Played \(when.string(from: e.played))\n"
-        }
-        return out
     }
 
     /// For a spreadsheet: newest first, with a date and time it reads as one. It starts with a
@@ -143,6 +176,7 @@ enum WatchedList {
 
     /// File > Export Watched Videos…: the list as a CSV file, saved where the person chooses.
     static func exportCSV() {
+        queue.sync { settle() }
         let list = entries()
         guard !list.isEmpty else {
             let alert = NSAlert()
@@ -161,20 +195,6 @@ enum WatchedList {
         } catch {
             ErrorLog.record("Export Watched Videos", url.lastPathComponent, error: error)
             NSAlert(error: error).runModal()
-        }
-    }
-
-    /// Shows the readable list in the Finder, or says there is none yet.
-    static func reveal() {
-        flush()
-        let text = textURL()
-        if FileManager.default.fileExists(atPath: text.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([text])
-        } else {
-            let alert = NSAlert()
-            alert.messageText = "No videos have been played yet"
-            alert.informativeText = "The list is made in your Movies folder when the first video plays."
-            alert.runModal()
         }
     }
 }

@@ -39,11 +39,15 @@ struct PlaylistView: View {
                 player.play(item, queue: playlist.items)
                 return true
             }))
+            .background(SelectAllKey { selectAll(in: playlist) })
             .overlay {
                 if playlist.items.isEmpty {
                     EmptyStateView(title: "Drop Videos Here", systemImage: "film.stack",
-                                   message: "Drag in files or folders, or click the + button. MKV, MP4, AVI, MOV and most other formats work.") {
-                        Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
+                                   message: "Drag in files or folders, or click Open to choose a video from your Mac and play it. MKV, MP4, AVI, MOV and most other formats work.") {
+                        HStack {
+                            Button("Open…") { player.chooseAndOpen(into: playlist.id) }
+                            Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
+                        }
                     }
                 }
             }
@@ -67,13 +71,20 @@ struct PlaylistView: View {
             .navigationTitle(playlist.name)
             .navigationSubtitle(playlist.items.count == 1 ? "1 video" : "\(playlist.items.count) videos")
             .toolbar {
-                // Beside the playlist's name, the list it adds to, rather than with the
-                // playback controls on the right.
+                // Beside the playlist's name, the list they add to, rather than with the
+                // playback controls on the right. The folder is the Mac's picture for opening
+                // a file: it plays what is chosen. The plus only lists it.
+                ToolbarItem(placement: .navigation) {
+                    Button { player.chooseAndOpen(into: playlist.id) } label: {
+                        Label("Open", systemImage: "folder")
+                    }
+                    .help("Open a video from your Mac and play it")
+                }
                 ToolbarItem(placement: .navigation) {
                     Button { library.presentOpenPanel(into: playlist.id) } label: {
                         Label("Add Videos", systemImage: "plus")
                     }
-                    .help("Add videos or folders")
+                    .help("Add videos or folders to this playlist without playing them")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     OutputPicker()
@@ -88,6 +99,11 @@ struct PlaylistView: View {
         } else {
             EmptyStateView(title: "No Playlist Selected", systemImage: "list.bullet.rectangle")
         }
+    }
+
+    /// Every video in the playlist: ⌘A, and Select All in the right-click menus.
+    private func selectAll(in playlist: Playlist) {
+        selection = Set(playlist.items.map(\.id))
     }
 
     /// After the confirmation: a playing video is stopped first, so its file isn't open while
@@ -145,12 +161,19 @@ struct PlaylistView: View {
                 }
             }
             Divider()
+            if items.count < playlist.items.count {
+                Button("Select All") { selectAll(in: playlist) }
+            }
             Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
             Divider()
             Button("Remove from Playlist") { library.remove(ids, from: playlist.id) }
             Button(items.count == 1 ? "Delete File…" : "Delete \(items.count) Files…", role: .destructive) { filesToDelete = items }
         } else {
+            Button("Open…") { player.chooseAndOpen(into: playlist.id) }
             Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
+            if !playlist.items.isEmpty {
+                Button("Select All") { selectAll(in: playlist) }
+            }
             Button("New Playlist") { library.newPlaylist() }
         }
     }
@@ -207,6 +230,43 @@ private struct ListKeyMonitor: NSViewRepresentable {
                 case 36, 76: return self.onReturn?() == true ? nil : event
                 default: return event
                 }
+            }
+        }
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+/// ⌘A selects every video in the playlist wherever the keyboard is in the main window. The
+/// system's Select All goes to whatever has the keyboard, and after a click in the sidebar
+/// that is the list of playlists, which has nothing to select. While text is being typed (a
+/// playlist's name, a title to search for) the key is left to the text.
+private struct SelectAllKey: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) { view.action = action }
+
+    final class MonitorView: NSView {
+        var action: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, event.window === self.window, !(self.window?.firstResponder is NSText),
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+                      event.charactersIgnoringModifiers?.lowercased() == "a" else { return event }
+                self.action?()
+                return nil
             }
         }
 

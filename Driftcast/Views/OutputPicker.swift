@@ -151,7 +151,8 @@ final class AirPlayPicker {
 }
 
 /// The local/AirPlay picture. When AirPlay is active AVPlayerView shows its own placeholder.
-/// A thin bar under the picture says which closed captions the video has (unless Settings hide it).
+/// A thin bar under the picture says which closed captions the video has, when it has any
+/// (unless Settings hide it).
 struct VideoWindow: View {
     @EnvironmentObject private var player: PlaybackController
     @AppStorage(Prefs.hideSubtitleNotices) private var hideNotices = false
@@ -166,6 +167,13 @@ struct VideoWindow: View {
 
     /// The bar under the picture (captions line, or the casting controls), as laid out.
     @State private var barHeight: CGFloat = 0
+
+    /// The captions bar is for a video that has captions to choose from. With none, a bar saying
+    /// so only took room from the picture (the user's call, 2026-11-19); Find Subtitles Online…
+    /// is still in the Subtitles menu and behind the playback bar's button.
+    private var showsCaptionsBar: Bool {
+        !hideNotices && player.nowPlaying != nil && !player.subtitleChoices.isEmpty
+    }
 
     fileprivate var pictureMinimum: CGSize {
         castingName == nil ? CGSize(width: 480, height: 270) : CGSize(width: 320, height: 140)
@@ -189,7 +197,7 @@ struct VideoWindow: View {
                     // All this window is for while casting: is it playing, and where.
                     Divider()
                     CastingControls()
-                } else if !hideNotices, player.nowPlaying != nil {
+                } else if showsCaptionsBar {
                     Divider()
                     CaptionsFooter()
                 }
@@ -200,9 +208,13 @@ struct VideoWindow: View {
                     .onChange(of: geometry.size.height) { barHeight = $0 }
             })
         }
-        .onAppear { fitWindow(casting: castingName != nil) }
+        .onAppear { fitWindow(casting: castingName != nil); keepBarVisible() }
         .onChange(of: castingName != nil) { casting in fitWindow(casting: casting) }
         .onChange(of: barHeight) { _ in keepBarVisible() }
+        // A size macOS puts back after the window opens is checked like any other.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
+            if (note.object as? NSWindow)?.identifier?.rawValue.hasPrefix("video") == true { keepBarVisible() }
+        }
         .onChange(of: player.nowPlaying?.url) { _ in keepBarVisible() }
         .background(WindowConfigurator { window in
             // Opened by the app when a video starts, never brought back by macOS at launch.
@@ -232,10 +244,22 @@ extension VideoWindow {
             defaults.removeObject(forKey: Self.sizeBeforeCastingKey)
             wanted = NSSizeFromString(saved)
         }
-        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: wanted))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
-        window.setFrame(frame, display: true, animate: true)
+        window.setFrame(Self.frame(of: window, withRoom: wanted), display: true, animate: true)
         keepBarVisible()
+    }
+
+    /// The height of the window that isn't room for the picture and the bar: its title bar.
+    /// SwiftUI lets this window's content run under the title bar, so the window's own
+    /// arithmetic (`frameRect(forContentRect:)`, `contentMinSize`) counts that strip as room.
+    /// Sizes here are the room below the title bar, and this is added to make a frame.
+    static func chrome(of window: NSWindow) -> CGFloat {
+        max(0, window.frame.height - window.contentLayoutRect.height)
+    }
+
+    /// The frame that leaves `room` below the title bar, the top-left corner staying where it is.
+    static func frame(of window: NSWindow, withRoom room: NSSize) -> NSRect {
+        let size = NSSize(width: room.width, height: room.height + chrome(of: window))
+        return NSRect(origin: NSPoint(x: window.frame.minX, y: window.frame.maxY - size.height), size: size)
     }
 
     /// The window can't be smaller than the picture's minimum plus the bar under it. A saved or
@@ -245,13 +269,13 @@ extension VideoWindow {
         DispatchQueue.main.async {
             guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("video") == true }) else { return }
             let needed = NSSize(width: pictureMinimum.width, height: pictureMinimum.height + barHeight)
-            window.contentMinSize = needed
+            // The smallest frame, title bar included, in the terms the window keeps its minimum in.
+            let smallest = Self.frame(of: window, withRoom: needed)
+            window.contentMinSize = window.contentRect(forFrameRect: smallest).size
             let current = window.contentLayoutRect.size
             guard current.height < needed.height - 0.5 || current.width < needed.width - 0.5 else { return }
-            let size = NSSize(width: max(current.width, needed.width), height: max(current.height, needed.height))
-            var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-            frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
-            window.setFrame(frame, display: true, animate: false)
+            let room = NSSize(width: max(current.width, needed.width), height: max(current.height, needed.height))
+            window.setFrame(Self.frame(of: window, withRoom: room), display: true, animate: false)
         }
     }
 }

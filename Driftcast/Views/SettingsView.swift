@@ -36,9 +36,9 @@ private struct GeneralSettings: View {
             }
             Section {
                 Toggle("Keep a list of the videos you watch", isOn: $watchedList)
-                Button("Show in Finder") { WatchedList.reveal() }
+                Button("Export…") { WatchedList.exportCSV() }
             } footer: {
-                Text("Each video you play is added to “\(WatchedList.name)” in your Movies folder, with the same list as a JSON file next to it. File > Export Watched Videos saves it as a spreadsheet.")
+                Text("Each video you play is added to a list kept inside Driftcast's own data, not in your folders. Export, here or in the File menu, saves it as a spreadsheet wherever you choose.")
             }
             Section {
                 Toggle("Look up posters and details online", isOn: $onlineDetails)
@@ -211,41 +211,52 @@ private struct SubtitleSettings: View {
 
     var body: some View {
         Form {
+            // First, because it decides whether the rest of the page matters: with it on, the
+            // sections below are grayed out.
+            Section {
+                Toggle("I don't care about subtitles", isOn: $hideNotices)
+            } footer: {
+                Text("Captions never come on by themselves, none are searched for as a video starts, and the notices about them are hidden: the bar under the video window and the Closed Captions section of the details panel. The Subtitles menu and the playback bar's button still work. Turn this off to change the settings below.")
+            }
             Section {
                 LanguagePicker(title: "Closed caption language", selection: $language)
+                    .dimmedWhenDisabled()
                 Toggle("Always turn on closed captions", isOn: Binding(
                     get: { auto == SubtitleAuto.always.rawValue },
                     set: { auto = $0 ? SubtitleAuto.always.rawValue : SubtitleAuto.never.rawValue }))
+                    .dimmedWhenDisabled()
                 Toggle("Turn them on when the audio is in another language", isOn: Binding(
                     get: { auto == SubtitleAuto.foreign.rawValue },
                     set: { auto = $0 ? SubtitleAuto.foreign.rawValue : SubtitleAuto.never.rawValue }))
+                    .dimmedWhenDisabled()
                     .disabled(auto == SubtitleAuto.always.rawValue)
                 Toggle("Search OpenSubtitles when the video has none in this language", isOn: $autoSearch)
+                    .dimmedWhenDisabled()
                     .disabled(auto == SubtitleAuto.never.rawValue || !hasKey)
             } footer: {
                 Text(hasKey
                      ? "Nothing comes on by itself unless one of these is ticked. When the video has no captions in this language, OpenSubtitles can be asked for them as the video starts; that takes a few seconds and the best match is kept with the video."
                      : "Nothing comes on by itself unless one of these is ticked. Asking OpenSubtitles for missing ones needs the API key below.")
             }
+            .disabled(hideNotices)
             Section {
                 Toggle("Convert picture subtitles (PGS, VobSub) to text", isOn: $ocr)
+                    .dimmedWhenDisabled()
                 LabeledContent("Subtitle size") {
                     HStack {
                         Slider(value: $scale, in: SubtitleSize.range, step: SubtitleSize.step)
                         Text(SubtitleSize.label(scale)).monospacedDigit().frame(width: 44, alignment: .trailing)
                     }
                 }
+                .dimmedWhenDisabled()
             } footer: {
                 Text("Picture subtitles are read with text recognition the first time they're used, which takes a minute for a film; with this off they are drawn into the video instead. The size applies on this Mac and on a Chromecast, and is also in the Subtitles menu; an AirPlay TV uses its own subtitle settings.")
             }
-            Section {
-                Toggle("I don't care about subtitles", isOn: $hideNotices)
-            } footer: {
-                Text("Hides the closed-caption notices: the bar under the video window and the Closed Captions section of the details panel. The Subtitles menu and the playback bar's button still work.")
-            }
+            .disabled(hideNotices)
             Section {
                 TextField("API key", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
+                    .dimmedWhenDisabled()
                 Button("How to get a free key…") { keyHelp = true }
                     .popover(isPresented: $keyHelp, arrowEdge: .bottom) { OpenSubtitlesKeyHelp() }
             } header: {
@@ -255,10 +266,27 @@ private struct SubtitleSettings: View {
                      ? "Searching for subtitles online needs a free key from OpenSubtitles. Subtitles that are already in the video, or in a file next to it, work without one."
                      : "Driftcast includes a key, so this can stay empty. Add your own only if you have an OpenSubtitles account with a higher download limit.")
             }
+            .disabled(hideNotices)
         }
         .formStyle(.grouped)
-        .frame(height: 660)   // four sections and their footers; the window sizes to this
+        .frame(height: 690)   // four sections and their footers; the window sizes to this
     }
+}
+
+/// In a grouped form macOS dims a disabled setting's control and leaves its title at full
+/// strength, so a page that has been switched off doesn't look it. This grays the title too,
+/// in the system's color for a control that can't be used.
+private struct DimmedWhenDisabled: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(isEnabled ? AnyShapeStyle(.foreground) : AnyShapeStyle(Color(nsColor: .disabledControlTextColor)))
+    }
+}
+
+private extension View {
+    /// Goes before the row's own `.disabled`, so that it sits inside what is disabled.
+    func dimmedWhenDisabled() -> some View { modifier(DimmedWhenDisabled()) }
 }
 
 private struct LanguagePicker: View {

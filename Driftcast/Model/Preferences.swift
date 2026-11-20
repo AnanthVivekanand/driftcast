@@ -19,7 +19,9 @@ enum Prefs {
     static let subtitleAuto = "turnOnSubtitles"
     /// Ask OpenSubtitles for subtitles as a video starts when the rule wants them and the file has none.
     static let autoSearchSubtitles = "searchSubtitlesAutomatically"
-    /// "I don't care about subtitles": hides the closed-caption notices (video window bar, details panel section).
+    /// "I don't care about subtitles": nothing comes on or is searched for by itself (see
+    /// `SubtitleAuto.current`), the closed-caption notices are hidden (video window bar, details
+    /// panel section), and the other subtitle settings are grayed out.
     static let hideSubtitleNotices = "hideSubtitleNotices"
     static let subtitleScale = "subtitleScale"
     static let openSubtitlesKey = "openSubtitlesAPIKey"
@@ -36,7 +38,7 @@ enum Prefs {
     static let showDetails = "showDetails"
     /// Which Settings tab is showing, so menus can open Settings on a particular one.
     static let settingsTab = "settingsTab"
-    /// Whether each video played is added to the list in the Movies folder (WatchedList).
+    /// Whether each video played is added to the list kept in the app's data folder (WatchedList).
     static let watchedList = "keepWatchedList"
 
     static func register() {
@@ -85,7 +87,12 @@ enum SubtitleAuto: String, CaseIterable {
     case foreign
     case always
 
-    static var current: SubtitleAuto { SubtitleAuto(rawValue: Prefs.string(Prefs.subtitleAuto)) ?? .never }
+    /// The rule in force. "I don't care about subtitles" overrides the rule that is set, which
+    /// is kept and counts again when that is turned off.
+    static var current: SubtitleAuto {
+        if Prefs.bool(Prefs.hideSubtitleNotices) { return .never }
+        return SubtitleAuto(rawValue: Prefs.string(Prefs.subtitleAuto)) ?? .never
+    }
 }
 
 /// Formats seconds as 1:02:03 or 2:03.

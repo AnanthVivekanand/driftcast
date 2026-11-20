@@ -1,12 +1,19 @@
 import Foundation
 
-/// Works out which files in a batch belong to one show, so they can go into a playlist named
-/// after it ("Sopranos.S1.E11.dolby.mp4", "Sopranos.S1.E12.dolby.mp4" -> "Sopranos").
+/// Works out which files in a batch belong to one show, and to which season of it, so that each
+/// season can go into a playlist of its own ("Sopranos.S1.E11.dolby.mp4",
+/// "Sopranos.S1.E12.dolby.mp4" -> "Sopranos S1").
 enum SeriesName {
     struct Group: Equatable {
-        var title: String
+        /// The show's name alone.
+        var show: String
+        /// The season these episodes are from, when their names say.
+        var season: Int?
         /// Positions in the list of names that was passed in.
         var members: [Int]
+
+        /// What the playlist is called: "Sopranos S1", or "Sopranos" with no season to go by.
+        var title: String { season.map { "\(show) S\($0)" } ?? show }
     }
 
     /// Where the show's name ends and the episode starts: S01E02, S1 E11, 1x02, Season 1,
@@ -64,7 +71,20 @@ enum SeriesName {
         return tidy(prefix)
     }
 
+    /// What the playlist of this episode's season is called ("The.Wire.S02E05.720p" -> "The
+    /// Wire S2"), for a file whose name gives both a show and a season. An episode added on
+    /// its own joins that playlist when there is one, and otherwise stays where it was put.
+    static func seasonPlaylist(forFileName name: String) -> String? {
+        guard let show = title(fromFileName: name), let season = MediaTitle.parse(fileName: name).season else { return nil }
+        return Group(show: show, season: season, members: []).title
+    }
+
     /// Splits a batch of file names into shows (two or more files each) and everything else.
+    /// A show is split again by season, a group for each in season order ("Sopranos S1",
+    /// "Sopranos S2"); a season with a single episode in the batch still gets its group, since
+    /// the rest of the batch says it is a show. Episodes that carry no season number stay
+    /// together under the show's name. One file of a show on its own is left in `rest`: a
+    /// playlist isn't made for a single video (see `seasonPlaylist` for where it may go).
     static func group(_ names: [String]) -> (series: [Group], rest: [Int]) {
         var order: [String] = []
         var byKey: [String: Group] = [:]
@@ -72,17 +92,22 @@ enum SeriesName {
         for (i, name) in names.enumerated() {
             guard let title = title(fromFileName: name) else { unmarked.append(i); continue }
             let key = title.lowercased()
-            if byKey[key] == nil { order.append(key); byKey[key] = Group(title: title, members: []) }
+            if byKey[key] == nil { order.append(key); byKey[key] = Group(show: title, season: nil, members: []) }
             byKey[key]?.members.append(i)
         }
         var series: [Group] = []
         var rest: [Int] = []
         for key in order {
             guard let g = byKey[key] else { continue }
-            if g.members.count >= 2 { series.append(g) } else { rest += g.members }
+            guard g.members.count >= 2 else { rest += g.members; continue }
+            // The season as the rows show it ("Sopranos S1 E11"), so a playlist's name agrees with what is in it.
+            let bySeason = Dictionary(grouping: g.members) { MediaTitle.parse(fileName: names[$0]).season }
+            for season in bySeason.keys.sorted(by: { ($0 ?? .max) < ($1 ?? .max) }) {
+                series.append(Group(show: g.show, season: season, members: bySeason[season] ?? []))
+            }
         }
         if let title = commonTitle(unmarked.map { names[$0] }) {
-            series.append(Group(title: title, members: unmarked))
+            series.append(Group(show: title, season: nil, members: unmarked))
         } else {
             rest += unmarked
         }

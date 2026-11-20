@@ -229,9 +229,15 @@ struct DetailsView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let details, let label = details.episodeLabel {
-                Text(details.episodeTitle.map { "\(label): \($0)" } ?? label)
+                // The season and episode on one line and the episode's name under it. Joined
+                // with a colon they broke in the middle of the name in a panel this narrow.
+                Text(label)
                     .font(.headline)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let name = details.episodeTitle, !name.isEmpty {
+                    Text(name)
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             let line = [
                 details?.year.map(String.init) ?? parsed?.year.map(String.init),

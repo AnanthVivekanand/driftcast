@@ -75,7 +75,19 @@ Prefs.defaults.set(true, forKey: Prefs.autoSearchSubtitles)
 check(PlaybackController.shouldSearchOnline(choices: summaryChoices, audio: nil) == OpenSubtitlesClient.hasKey, "French missing: OpenSubtitles is asked only when a key exists (\(OpenSubtitlesClient.hasKey))")
 Prefs.defaults.set(SubtitleAuto.never.rawValue, forKey: Prefs.subtitleAuto)
 check(!PlaybackController.subtitlesWanted(audio: nil) && PlaybackController.preferredSubtitle(summaryChoices, audio: nil) == nil, "never: nothing comes on by itself")
-for key in [Prefs.subtitleLanguage, Prefs.subtitleAuto, Prefs.autoSearchSubtitles] { Prefs.defaults.removeObject(forKey: key) }
+// "I don't care about subtitles" overrides the rule that is set, and gives it back
+Prefs.defaults.set("fr", forKey: Prefs.subtitleLanguage)
+Prefs.defaults.set(SubtitleAuto.always.rawValue, forKey: Prefs.subtitleAuto)
+Prefs.defaults.set(true, forKey: Prefs.hideSubtitleNotices)
+check(SubtitleAuto.current == .never && !PlaybackController.subtitlesWanted(audio: nil)
+      && !PlaybackController.shouldSearchOnline(choices: summaryChoices, audio: nil),
+      "don't care about subtitles: nothing is wanted or searched for, though Always and the search are ticked")
+Prefs.defaults.set("es", forKey: Prefs.subtitleLanguage)
+check(PlaybackController.preferredSubtitle(summaryChoices, audio: nil) == nil, "don't care about subtitles: a track in the language stays off")
+Prefs.defaults.set(false, forKey: Prefs.hideSubtitleNotices)
+check(SubtitleAuto.current == .always && PlaybackController.preferredSubtitle(summaryChoices, audio: nil)?.language == "spa",
+      "caring again: the rule that was set is back")
+for key in [Prefs.subtitleLanguage, Prefs.subtitleAuto, Prefs.autoSearchSubtitles, Prefs.hideSubtitleNotices] { Prefs.defaults.removeObject(forKey: key) }
 
 // Planning
 let settings = EncoderSettings.current()
@@ -369,6 +381,34 @@ do {
     try? FileManager.default.removeItem(at: dir)
 }
 
+// Open: what is chosen is added, and the answer is the video to play with its playlist
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-open-\(UUID().uuidString)")
+    let folder = dir.appendingPathComponent("Folder")
+    try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let one = dir.appendingPathComponent("one.mp4"), notes = dir.appendingPathComponent("notes.txt")
+    for f in [one, notes, folder.appendingPathComponent("b.mkv"), folder.appendingPathComponent("a.mkv")] { try! Data("x".utf8).write(to: f) }
+    let shown = lib.selection
+    let pl = lib.newPlaylist(named: "harness-open"), other = lib.newPlaylist(named: "harness-open-other")
+    @MainActor func rows() -> Int { lib.playlists.first { $0.id == pl }!.items.count }
+    lib.selection = pl
+    let first = lib.addToPlay([one], to: pl)
+    check(first?.item.url == one && first?.queue.map(\.url) == [one], "an opened video is added and is the one to play")
+    let again = lib.addToPlay([one], to: pl)
+    check(again != nil && again?.item.id == first?.item.id && rows() == 1, "a video opened again plays from its row and isn't listed twice (\(rows()) rows)")
+    let dropped = lib.addToPlay([folder], to: pl)
+    check(dropped?.item.url.lastPathComponent == "a.mkv" && dropped?.queue.count == 3, "an opened folder is added and its first video plays, the playlist after it (\(dropped?.item.url.lastPathComponent ?? "nil"), \(dropped?.queue.count ?? 0))")
+    let droppedAgain = lib.addToPlay([folder], to: pl)
+    check(droppedAgain?.item.id == dropped?.item.id && rows() == 3, "a folder opened again plays its first video from the list (\(rows()) rows)")
+    check(lib.addToPlay([notes], to: pl) == nil && lib.addToPlay([], to: pl) == nil && rows() == 3, "a file that isn't a video opens nothing")
+    lib.selection = other
+    let elsewhere = lib.addToPlay([one], to: pl)
+    check(elsewhere?.item.id == first?.item.id && elsewhere?.queue.count == 3, "a listed video opened into a playlist that isn't on show plays from that playlist")
+    lib.deletePlaylist(pl); lib.deletePlaylist(other)
+    lib.selection = shown
+    try? FileManager.default.removeItem(at: dir)
+}
+
 // The error log: one line an error, with the reason and the numbers behind it
 do {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-logs-\(UUID().uuidString)")
@@ -394,7 +434,7 @@ do {
     try? FileManager.default.removeItem(at: dir)
 }
 
-// The list of videos played: a file to read, the same as JSON, and a spreadsheet
+// The list of videos played: one JSON file in the app's own data folder, and a spreadsheet to export
 do {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("harness-watched-\(UUID().uuidString)")
     let t0 = Date(timeIntervalSince1970: 1_795_000_000)
@@ -411,13 +451,10 @@ do {
     let order = ["\"filename\"", "\"title\"", "\"played\""].compactMap { json.range(of: $0)?.lowerBound }
     check(order.count == 3 && order == order.sorted() && json.contains("\"title\": \"Amélie, \\\"the film\\\" (2001)\"") && json.contains("\"played\": \"20"),
           "watched list: JSON has filename, title, played, in that order")
-    let text = (try? String(contentsOf: WatchedList.textURL(in: dir), encoding: .utf8)) ?? ""
-    let newest = text.range(of: "Amélie")?.lowerBound, oldest = text.range(of: "The Sopranos")?.lowerBound
-    check(text.hasPrefix("Videos I have watched on Driftcast\n") && newest != nil && oldest != nil && newest! < oldest!
-          && text.contains("\nAmelie, 2001.mkv\n    Amélie, \"the film\" (2001)\n    Played "),
-          "watched list: the readable file is headed by its name, newest first, each video as file, name, when")
-    let hidden = (try? WatchedList.textURL(in: dir).resourceValues(forKeys: [.hasHiddenExtensionKey]))?.hasHiddenExtension
-    check(hidden == true, "watched list: the readable file shows without its .txt, so the JSON sits under it")
+    let written = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    check(written == ["watched-videos.json"], "watched list: one file is written, and nothing to read beside it (\(written))")
+    check(WatchedList.folder.path.hasSuffix("/Library/Application Support/Driftcast") && !WatchedList.jsonURL().path.contains("/Movies/"),
+          "watched list: it is kept in the app's own data folder, not in Movies")
     let csv = WatchedList.csv(read)
     check(Array(csv.utf8.prefix(3)) == [0xEF, 0xBB, 0xBF]
           && csv.contains("File,Title,Played\r\n\"Amelie, 2001.mkv\",\"Amélie, \"\"the film\"\" (2001)\",20")
@@ -427,7 +464,7 @@ do {
     let edited = WatchedList.encode(read).replacingOccurrences(of: WatchedList.encode([b]).split(separator: "\n")[4], with: "    \"played\": \"last Tuesday\"")
     try! Data(edited.utf8).write(to: WatchedList.jsonURL(in: dir))
     try! WatchedList.add(.init(title: "Heat (1995)", filename: "Heat.1995.mkv", played: t0 + 90_000), in: dir)
-    let copy = (try? String(contentsOf: dir.appendingPathComponent(WatchedList.name + " (unreadable).json"), encoding: .utf8)) ?? ""
+    let copy = (try? String(contentsOf: WatchedList.unreadableURL(in: dir), encoding: .utf8)) ?? ""
     let after = WatchedList.entries(in: dir)
     check(copy.contains("last Tuesday") && copy.contains("Amélie") && after.count == 3 && after.last?.title == "Heat (1995)",
           "watched list: a row that can't be read is kept in a copy beside the list (\(after.count) entries after)")
@@ -436,9 +473,59 @@ do {
           "watched list: a name that starts like a formula is plain text in the spreadsheet")
     try! Data("not a list".utf8).write(to: WatchedList.jsonURL(in: dir))
     try! WatchedList.add(a, in: dir)
-    let aside = FileManager.default.fileExists(atPath: dir.appendingPathComponent(WatchedList.name + " (unreadable).json").path)
+    let aside = (try? String(contentsOf: WatchedList.unreadableURL(in: dir), encoding: .utf8)) == "not a list"
     check(aside && WatchedList.entries(in: dir) == [a], "watched list: a JSON file that can't be read is set aside, not written over")
     try? FileManager.default.removeItem(at: dir)
+}
+
+// The list version 1.1.1 kept in the Movies folder is taken in, and nothing is left there
+do {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("harness-watched-old-\(UUID().uuidString)")
+    let movies = root.appendingPathComponent("Movies"), store = root.appendingPathComponent("Store")
+    try! fm.createDirectory(at: movies, withIntermediateDirectories: true)
+    let t0 = Date(timeIntervalSince1970: 1_795_000_000)
+    let a = WatchedList.Entry(title: "Heat (1995)", filename: "Heat.1995.mkv", played: t0)
+    let b = WatchedList.Entry(title: "Alien (1979)", filename: "Alien.1979.mkv", played: t0 + 7200)
+    let c = WatchedList.Entry(title: "Ronin (1998)", filename: "Ronin.1998.mkv", played: t0 + 90_000)
+    let oldJSON = movies.appendingPathComponent(WatchedList.name + ".json"), oldText = movies.appendingPathComponent(WatchedList.name + ".txt")
+    func left() -> [String] { ((try? fm.contentsOfDirectory(atPath: movies.path)) ?? []).sorted() }
+    try! Data(WatchedList.encode([a, b]).utf8).write(to: oldJSON)
+    try! Data("the readable list".utf8).write(to: oldText)
+    try! Data("keep me".utf8).write(to: movies.appendingPathComponent("Holiday.mov"))
+    try! WatchedList.add(c, in: store)        // played with the new version before the old list was taken in
+    try! WatchedList.add(b, in: store)
+    try! WatchedList.takeIn(from: movies, to: store)
+    var now = WatchedList.entries(in: store)
+    check(now == [a, b, c] && left() == ["Holiday.mov"],
+          "old watched list: its entries join the new one in the order played, each once, and only its own files leave Movies (\(now.count) entries, left: \(left()))")
+    try! WatchedList.takeIn(from: movies, to: store)
+    check(WatchedList.entries(in: store) == [a, b, c], "old watched list: with nothing left in Movies, nothing changes")
+
+    // One that was edited by hand and can't all be read: moved in whole, not deleted
+    let store2 = root.appendingPathComponent("Store2")
+    let edited = WatchedList.encode([a, b]).replacingOccurrences(of: WatchedList.encode([b]).split(separator: "\n")[4], with: "    \"played\": \"last Tuesday\"")
+    try! Data(edited.utf8).write(to: oldJSON)
+    try! Data("the readable list".utf8).write(to: oldText)
+    try! Data("an earlier copy".utf8).write(to: movies.appendingPathComponent(WatchedList.name + " (unreadable).json"))
+    try! WatchedList.takeIn(from: movies, to: store2)
+    now = WatchedList.entries(in: store2)
+    let whole = (try? String(contentsOf: store2.appendingPathComponent("watched-videos (from Movies).json"), encoding: .utf8)) ?? ""
+    let kept = ((try? fm.contentsOfDirectory(atPath: store2.path)) ?? []).sorted()
+    check(now == [a] && whole.contains("last Tuesday") && whole.contains("Alien") && left() == ["Holiday.mov"] && kept.count == 4,
+          "old watched list: one that can't all be read is moved in whole with its text and earlier copy, out of view and not lost (\(kept))")
+
+    // Not a list at all, and a text file with no JSON: moved in, nothing written over
+    let store3 = root.appendingPathComponent("Store3")
+    try! WatchedList.add(c, in: store3)
+    try! Data("not a list".utf8).write(to: oldJSON)
+    try! WatchedList.takeIn(from: movies, to: store3)
+    try! Data("only the text".utf8).write(to: oldText)
+    try! WatchedList.takeIn(from: movies, to: store3)
+    let text = (try? String(contentsOf: store3.appendingPathComponent("watched-videos (from Movies).txt"), encoding: .utf8)) ?? ""
+    check(WatchedList.entries(in: store3) == [c] && text == "only the text" && left() == ["Holiday.mov"],
+          "old watched list: a file that isn't a list, or a text file alone, is moved in and the list here is untouched")
+    try? fm.removeItem(at: root)
 }
 
 // A title corrected by hand is the name shown everywhere, and the one looked up
@@ -482,7 +569,16 @@ check(SeriesName.title(fromFileName: "Test.Movie.2024.1080p") == nil && SeriesNa
 check(SeriesName.commonTitle(["Lecture 01", "Lecture 02", "Lecture 10"]) == "Lecture", "series: common start -> \(SeriesName.commonTitle(["Lecture 01", "Lecture 02", "Lecture 10"]) ?? "nil")")
 check(SeriesName.commonTitle(["The Matrix", "The Godfather"]) == nil && SeriesName.commonTitle(["simple", "hdr", "Test.Movie.2024.1080p"]) == nil, "series: unrelated movies are not grouped")
 let grouped = SeriesName.group(["Sopranos.S1.E11.x", "Heat.1995", "Sopranos.S1.E12.x", "Lost.S01E01"])
-check(grouped.series == [SeriesName.Group(title: "Sopranos", members: [0, 2])] && grouped.rest == [1, 3], "series: grouping keeps single files out: \(grouped)")
+check(grouped.series == [SeriesName.Group(show: "Sopranos", season: 1, members: [0, 2])] && grouped.series.first?.title == "Sopranos S1" && grouped.rest == [1, 3],
+      "series: grouping keeps single files out, and names the season: \(grouped)")
+let home = ["The.Wire.S02E05.720p", "Office 3x07", "Show Season 4 Episode 1", "Dune Part 2", "Planet Earth Episode 4", "Heat.1995"].map { SeriesName.seasonPlaylist(forFileName: $0) ?? "nil" }
+check(home == ["The Wire S2", "Office S3", "Show S4", "nil", "nil", "nil"], "series: an episode's season playlist is named only when its name gives a season: \(home)")
+let seasons = SeriesName.group(["Show.S02E05.x", "Show.S01E02.x", "Show.S02E01.x", "Show.S10E01.x", "Other 3x07", "Other 3x08", "Other Season 4 Episode 1", "Heat.1995"])
+check(seasons.series.map(\.title) == ["Show S1", "Show S2", "Show S10", "Other S3", "Other S4"] && seasons.series.map(\.members) == [[1], [0, 2], [3], [4, 5], [6]] && seasons.rest == [7],
+      "series: a group for each season, in season order, a lone episode of another season included: \(seasons.series.map(\.title)) \(seasons.series.map(\.members))")
+let unnumbered = SeriesName.group(["Planet Earth Episode 1", "Planet Earth Episode 2", "Lecture 01", "Lecture 02"])
+check(unnumbered.series.map(\.title) == ["Planet Earth", "Lecture"] && unnumbered.series.allSatisfy { $0.season == nil },
+      "series: episodes with no season number stay under the show's name: \(unnumbered.series.map(\.title))")
 do {
     let dir = mediaDir.appendingPathComponent("series", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -491,18 +587,77 @@ do {
     let other = lib.newPlaylist(named: "harness2")
     let before = lib.playlists.count
     let added = lib.add(files, to: other)
-    let show = lib.playlists.first { $0.name == "Sopranos" }
+    let show = lib.playlists.first { $0.name == "Sopranos S1" }
     check(lib.playlists.count == before + 1 && show?.items.map(\.baseName) == ["Sopranos.S1.E2.dolbuy", "Sopranos.S1.E11.dolbuy", "Sopranos.S1.E12.dolbuy"],
-          "dropping episodes makes a Sopranos playlist in episode order: \(show?.items.map(\.baseName) ?? [])")
+          "dropping episodes makes a Sopranos S1 playlist in episode order: \(show?.items.map(\.baseName) ?? [])")
     check(lib.playlists.first { $0.id == other }?.items.map(\.baseName) == ["Heat.1995"] && added.count == 4 && lib.selection == show?.id, "the odd film stays in the playlist it was dropped on; the show is selected")
     lib.add(files, to: other)
-    check(lib.playlists.filter { $0.name == "Sopranos" }.count == 1 && lib.playlists.first { $0.name == "Sopranos" }?.items.count == 3, "dropping the same episodes again reuses the playlist without duplicates")
+    check(lib.playlists.filter { $0.name == "Sopranos S1" }.count == 1 && lib.playlists.first { $0.name == "Sopranos S1" }?.items.count == 3, "dropping the same episodes again reuses the playlist without duplicates")
     if let show { lib.deletePlaylist(show.id) }
     lib.deletePlaylist(other)
     let empty = lib.newPlaylist()
     lib.add(Array(files.prefix(3)), to: empty)
-    check(lib.playlists.first { $0.id == empty }?.name == "Sopranos", "an empty default playlist is renamed to the show")
+    check(lib.playlists.first { $0.id == empty }?.name == "Sopranos S1", "an empty default playlist is renamed to the show and season")
     lib.deletePlaylist(empty)
+
+    // Two seasons dropped together: a playlist for each
+    let two = ["Wire.S02E02.mkv", "Wire.S01E03.mkv", "Wire.S02E01.mkv", "Wire.S01E01.mkv"].map { dir.appendingPathComponent($0) }
+    two.forEach { FileManager.default.createFile(atPath: $0.path, contents: Data()) }
+    let fresh = lib.newPlaylist()
+    let count = lib.playlists.count
+    let both = lib.add(two, to: fresh)
+    let s1 = lib.playlists.first { $0.name == "Wire S1" }, s2 = lib.playlists.first { $0.name == "Wire S2" }
+    check(s1?.items.map(\.baseName) == ["Wire.S01E01", "Wire.S01E03"] && s2?.items.map(\.baseName) == ["Wire.S02E01", "Wire.S02E02"] && both.count == 4,
+          "two seasons dropped together make a playlist each, in episode order: \(s1?.items.map(\.baseName) ?? []) \(s2?.items.map(\.baseName) ?? [])")
+    check(s1?.id == fresh && lib.playlists.count == count + 1 && lib.selection == fresh && both.first?.baseName == "Wire.S01E01",
+          "the empty playlist dropped on becomes season 1, season 2 is added beside it, and season 1 is shown")
+    let open = lib.addToPlay(two, to: fresh)
+    check(open?.item.baseName == "Wire.S01E01" && open?.queue.count == 2, "opening both seasons again plays season 1's first episode, with season 1 after it")
+    if let s1 { lib.deletePlaylist(s1.id) }
+    if let s2 { lib.deletePlaylist(s2.id) }
+
+    // One episode alone stays where it is dropped, unless its season already has a playlist
+    let film = lib.newPlaylist(named: "harness-films")
+    lib.selection = film
+    let alone = lib.playlists.count
+    let single = lib.add([two[1]], to: film)        // Wire.S01E03, and there is no Wire S1 playlist
+    check(single.count == 1 && lib.playlists.count == alone && lib.playlists.first { $0.id == film }?.items.map(\.baseName) == ["Wire.S01E03"] && lib.selection == film,
+          "one episode dropped alone stays in the playlist it was dropped on, and no playlist is made for it")
+    lib.remove(Set(single.map(\.id)), from: film)
+    lib.add(two, to: film)                          // both seasons together: the season playlists are made
+    let later = dir.appendingPathComponent("Wire.S01E05.mkv")
+    FileManager.default.createFile(atPath: later.path, contents: Data())
+    lib.selection = film
+    let joined = lib.add([later], to: film)
+    let season1 = lib.playlists.first { $0.name == "Wire S1" }
+    check(joined.count == 1 && season1?.items.map(\.baseName) == ["Wire.S01E01", "Wire.S01E03", "Wire.S01E05"]
+          && lib.playlists.first { $0.id == film }?.items.isEmpty == true && lib.selection == season1?.id,
+          "with its season's playlist there, an episode dropped alone joins it and that playlist is shown: \(season1?.items.map(\.baseName) ?? [])")
+    let twice = lib.add([later], to: film)
+    let opened = lib.addToPlay([later], to: film)
+    check(twice.isEmpty && lib.playlists.first { $0.name == "Wire S1" }?.items.count == 3 && opened?.item.baseName == "Wire.S01E05" && opened?.queue.count == 3,
+          "the same episode again is not listed twice, and opening it plays it from its season's playlist")
+    lib.deletePlaylist(film)
+
+    // A show's playlist from before, named after the show alone
+    guard let old = season1?.id else { fatalError("no Wire S1 playlist") }
+    lib.playlists.filter { $0.name == "Wire S2" }.forEach { lib.deletePlaylist($0.id) }
+    lib.rename(old, to: "Wire")
+    lib.add([two[0], two[2]], to: old)              // season 2
+    let renamed = lib.playlists.first { $0.id == old }
+    let beside = lib.playlists.first { $0.name == "Wire S2" }
+    check(renamed?.name == "Wire S1" && renamed?.items.count == 3 && beside?.items.count == 2,
+          "an older playlist named after the show that holds one season takes the season's name when more of the show is added: \(renamed?.name ?? "nil") \(renamed?.items.count ?? 0)")
+    // One that mixes seasons
+    if let beside { lib.moveItems(Set(beside.items.map(\.id)), from: beside.id, to: old); lib.deletePlaylist(beside.id) }
+    lib.rename(old, to: "Wire")
+    let third = ["Wire.S03E01.mkv", "Wire.S03E02.mkv"].map { dir.appendingPathComponent($0) }
+    third.forEach { FileManager.default.createFile(atPath: $0.path, contents: Data()) }
+    lib.add(third, to: old)
+    check(lib.playlists.first { $0.id == old }?.name == "Wire" && lib.playlists.first { $0.id == old }?.items.count == 5
+          && lib.playlists.first { $0.name == "Wire S3" }?.items.count == 2,
+          "an older playlist that mixes seasons is left as it is, and a new season gets its own")
+    for name in ["Wire", "Wire S1", "Wire S2", "Wire S3"] { lib.playlists.filter { $0.name == name }.forEach { lib.deletePlaylist($0.id) } }
 }
 
 }

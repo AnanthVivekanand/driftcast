@@ -188,13 +188,14 @@ final class Library: ObservableObject {
         var firstSeriesPlaylist: Playlist.ID?
 
         for (n, group) in series.enumerated() {
+            if group.season != nil { nameBySeason(show: group.show) }
             let index: Int
             if let existing = playlists.firstIndex(where: { $0.name.compare(group.title, options: .caseInsensitive) == .orderedSame }) {
                 index = existing
-            } else if n == 0, series.count == 1, rest.isEmpty,
+            } else if n == 0, rest.isEmpty,
                       let target = playlists.firstIndex(where: { $0.id == id }),
                       playlists[target].items.isEmpty, Self.isDefaultName(playlists[target].name) {
-                // An untouched empty playlist becomes the show's playlist rather than being left behind.
+                // An untouched empty playlist becomes the first season's rather than being left behind.
                 playlists[target].name = group.title
                 index = target
             } else {
@@ -212,16 +213,43 @@ final class Library: ObservableObject {
         }
 
         if !rest.isEmpty, let target = playlists.firstIndex(where: { $0.id == id }) {
+            var staying: [URL] = []
+            for file in rest.map({ files[$0] }) {
+                // An episode on its own joins its season's playlist when there is one. A
+                // playlist isn't made for one video: without one it stays where it was dropped.
+                guard let name = SeriesName.seasonPlaylist(forFileName: file.deletingPathExtension().lastPathComponent),
+                      let home = playlists.firstIndex(where: { $0.name.compare(name, options: .caseInsensitive) == .orderedSame }),
+                      home != target else { staying.append(file); continue }
+                if !playlists[home].items.contains(where: { $0.url == file }) {
+                    let item = MediaItem(url: file)
+                    playlists[home].items.append(item)
+                    added.append(item)
+                }
+                if firstSeriesPlaylist == nil { firstSeriesPlaylist = playlists[home].id }
+            }
             // A video that is already in the playlist (opened again from Finder, say) is not
             // listed twice.
             let present = Set(playlists[target].items.map(\.url))
-            let items = rest.map { files[$0] }.filter { !present.contains($0) }.map { MediaItem(url: $0) }
+            let items = staying.filter { !present.contains($0) }.map { MediaItem(url: $0) }
             playlists[target].items += items
             added += items
         }
         if let firstSeriesPlaylist { selection = firstSeriesPlaylist }
         save()
         return added
+    }
+
+    /// Until seasons had playlists of their own, a show's playlist was named after the show
+    /// alone. One that holds a single season takes that season's name when more of the show is
+    /// added, so the new episodes join it, or sit beside it, under names that match. One that
+    /// mixes seasons is left as it is.
+    private func nameBySeason(show: String) {
+        guard let i = playlists.firstIndex(where: { $0.name.compare(show, options: .caseInsensitive) == .orderedSame }) else { return }
+        let seasons = Set(playlists[i].items.map { MediaTitle.parse(fileName: $0.baseName).season })
+        guard seasons.count == 1, let only = seasons.first, let season = only else { return }
+        let name = "\(playlists[i].name) S\(season)"
+        guard !playlists.contains(where: { $0.name.compare(name, options: .caseInsensitive) == .orderedSame }) else { return }
+        playlists[i].name = name
     }
 
     private static func isDefaultName(_ name: String) -> Bool {
@@ -310,14 +338,46 @@ final class Library: ObservableObject {
         save()
     }
 
-    func presentOpenPanel(into playlistID: Playlist.ID? = nil) {
+    /// Adds `urls` as `add` does and answers which video to play: the first one added, or,
+    /// when all of them were listed already, the first of them in the playlist on show. With
+    /// it comes the playlist it sits in, which plays on after it. Nil when none of `urls` is
+    /// a video. Behind Open…, the toolbar's folder button and files opened from the Finder.
+    func addToPlay(_ urls: [URL], to playlistID: Playlist.ID? = nil) -> (item: MediaItem, queue: [MediaItem])? {
+        // With no playlist selected there is still somewhere to open into.
+        let target = playlistID ?? selection ?? playlists.first?.id
+        if selection == nil { selection = target }
+        let added = add(urls, to: target)
+        if let first = added.first,
+           let home = playlists.first(where: { $0.items.contains { $0.id == first.id } }) {
+            return (first, home.items)
+        }
+        // Listed already. Adding selects a show's playlist, so the selected one is looked in
+        // before the one asked for. Matched on the files a folder holds, as adding does: a
+        // folder reached through a link has another path than the files found in it.
+        let files = Set(Self.expand(urls))
+        for id in [selection, target] {
+            guard let playlist = playlists.first(where: { $0.id == id }),
+                  let listed = playlist.items.first(where: { files.contains($0.url) }) else { continue }
+            return (listed, playlist.items)
+        }
+        return nil
+    }
+
+    /// The panel behind Open… and Add Videos…: videos or folders, several at once.
+    func chooseVideos(prompt: String, message: String) -> [URL] {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.prompt = "Add"
-        panel.message = "Choose videos or folders to add to the playlist."
-        if panel.runModal() == .OK { add(panel.urls, to: playlistID) }
+        panel.prompt = prompt
+        panel.message = message
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    /// Add Videos…: what is chosen is listed, and nothing starts playing.
+    func presentOpenPanel(into playlistID: Playlist.ID? = nil) {
+        let urls = chooseVideos(prompt: "Add", message: "Choose videos or folders to add to the playlist. Nothing starts playing.")
+        if !urls.isEmpty { add(urls, to: playlistID) }
     }
 
     // MARK: Watch progress

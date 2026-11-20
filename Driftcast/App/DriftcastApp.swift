@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { SubtitleSizeMenuItem.shared.install() }
+        WatchedList.takeInOldList()
         // The red close button on the main window quits Driftcast, as the user expects of a
         // single-window player. Other windows (Video, Settings) just close.
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
@@ -90,16 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Files opened from Finder ("Open With", dropping on the Dock icon) are added and played.
     func application(_ application: NSApplication, open urls: [URL]) {
-        MainActor.assumeIsolated {
-            guard let library = Self.library, let player = Self.player else { return }
-            let added = library.add(urls)
-            guard let playlist = library.selectedPlaylist else { return }
-            // A video that was already listed plays from its existing row.
-            let first = added.first ?? playlist.items.first { item in
-                urls.contains { item.url == $0 || item.url.path.hasPrefix($0.path + "/") }
-            }
-            if let first { player.play(first, queue: playlist.items) }
-        }
+        MainActor.assumeIsolated { _ = Self.player?.open(urls) }
     }
 }
 
@@ -110,8 +102,11 @@ struct PlaybackCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Add Videos…") { library.presentOpenPanel() }
+            // Open… plays what is chosen; Add Videos… lists it and leaves what is playing alone.
+            Button("Open…") { player.chooseAndOpen() }
                 .keyboardShortcut("o")
+            Button("Add Videos…") { library.presentOpenPanel() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
             Button("New Playlist") { library.newPlaylist() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()

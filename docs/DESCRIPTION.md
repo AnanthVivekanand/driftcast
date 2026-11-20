@@ -9,10 +9,11 @@ your Mac on a Chromecast, an Apple TV or an AirPlay 2 TV, and on the Mac itself.
 only what the device can't play, while the video is playing, so nearly any file plays on nearly
 any device without waiting and without quality loss where none is needed.
 
-This document describes version 1.1.1 as of 19 November 2026. It is written from
+This document describes version 1.1.2 as of 20 November 2026. It is written from
 the source code, so every statement below corresponds to something the code does. Where a
-feature has not been tried on real hardware, it says so. What changed since version 1.1 is
-marked "(new in 1.1.1)".
+feature has not been tried on real hardware, it says so. What changed in version 1.1.1 is
+marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or "since
+1.1.2".
 
 ---
 
@@ -94,7 +95,8 @@ marked "(new in 1.1.1)".
 - A **details panel** beside the playlist (toolbar button, ⌘I, or View > Show Details) shows
   the selected or playing video's poster, title, year, running time, age rating, network,
   genres, ratings, director, writers, cast and plot; for an episode, the show's details plus
-  the season and episode number, the episode's name, air date, still and synopsis. The
+  the season and episode number, the episode's name (since 1.1.2 on its own line under
+  them, not after a colon), air date, still and synopsis. The
   panel's own header has a button that folds it away (⌥⌘I brings it back). It is a
   fixed-width column inside the window, so opening it never makes the window bigger; the
   playlist gives up the room and the panel scrolls, with a floating arrow at its foot that
@@ -192,8 +194,14 @@ marked "(new in 1.1.1)".
   the device. It goes back to its size when playback returns to this Mac.
 - **Video window footer:** a thin bar under the picture reads "Closed Captions: English,
   Spanish" (or "No closed captions in this video") with the same menu as the playback bar.
+  Since 1.1.2 the bar is shown only for a video that has captions; with none there is no
+  bar, and Find Subtitles Online… is in the Subtitles menu and behind the playback bar's
+  button.
 - **"I don't care about subtitles"** (Settings > Subtitles) hides that footer and the Closed
-  Captions section of the details panel; the menus still work.
+  Captions section of the details panel; the menus still work. Since 1.1.2 it is the first
+  setting on the page and does more: captions never come on by themselves and none are
+  searched for as a video starts, whatever the rules below it say, and the rest of the page is
+  grayed out until it is turned off. The rules keep their values and count again then.
 - **Subtitle size** is one setting from 60% to 200%, remembered between launches: a slider in
   the menu bar's Subtitles menu (with Larger ⌥⌘= and Smaller ⌥⌘− above it), a Subtitle Size
   submenu with the same steps and presets in the playback bar's and the video window's
@@ -219,13 +227,28 @@ marked "(new in 1.1.1)".
 
 ### Playlists and library
 - Any number of named playlists in a sidebar; rename, delete, add videos or folders to each.
-- Drag files or folders into the window, the sidebar, or onto the Dock icon; use the + button
-  beside the playlist's name, File > Add Videos… or "Open With" from the Finder. Folders are searched recursively and
-  sorted the way the Finder sorts.
+- Drag files or folders into the window, the sidebar, or onto the Dock icon, or use "Open
+  With" from the Finder. Folders are searched recursively and sorted the way the Finder sorts.
+- **Open…** (new in 1.1.2): File > Open… (⌘O), or the folder button beside the playlist's name,
+  chooses videos or folders from the Mac, adds them to the playlist and plays the first, as
+  opening a video from the Finder does. A video that is already listed plays from its row and
+  isn't listed twice. Choosing something with no video in it says so.
+- **Add Videos…:** the + button beside the folder, or File > Add Videos… (⇧⌘O), lists what is
+  chosen and leaves whatever is playing alone. In 1.1.1 this was the only command, on ⌘O.
 - **Show playlists:** dropping two or more episodes of one show (`Sopranos.S1.E11.mp4`,
   `Show.S02E05.mkv`, `Series 3x07`, `Episode 4`, names that differ only by a number) creates a
   playlist named after the show, in episode order, or adds to an existing one without
   duplicates. An unrelated film in the same drop stays where it was dropped.
+- **A playlist for each season** (new in 1.1.2): the show's episodes are split by season, so
+  dropping or opening seasons 1 and 2 of a show makes "Sopranos S1" and "Sopranos S2", each in
+  episode order, with season 1 shown. A single season still gets its season in the name, so a
+  later season lands beside it and not in it. Episodes whose names carry no season number
+  (`Episode 4`, names that differ only by a number) stay in one playlist named after the
+  show. One episode added on its own stays where it is dropped, since a playlist isn't made
+  for a single video, unless its season already has a playlist, which it then joins. An
+  empty, untouched playlist that is dropped on becomes the first season's. A
+  playlist made by 1.1.1 that is named after the show and holds a single season is renamed
+  to that season when more of the show is added; one that mixes seasons is left alone.
 - Each row shows a poster frame, the cleaned name, the time left, the stream summary (codec,
   resolution, HDR, audio, track and subtitle counts), and on the right the duration with a bar
   under it of how much has been watched. The bars form one column down the list: blue while
@@ -242,12 +265,18 @@ marked "(new in 1.1.1)".
 - The library is a JSON file in Application Support, written after every change and again on
   quit.
 - **A list of the videos you watch** (new in 1.1.1): each video that starts playing is added to
-  "Videos I have watched on Driftcast" in your Movies folder, with its file name, its cleaned
-  name and when it was played, newest first. The same list sits under it as a JSON file
-  (`filename`, `title`, `played`), and File > Export Watched Videos… saves it as a CSV
-  spreadsheet with the same three columns in that order.
+  a list with its file name, its cleaned name and when it was played. File > Export Watched
+  Videos… saves it as a CSV spreadsheet with those three columns in that order, newest first.
   Starting the same video again within 30 minutes counts as the same viewing. It can be
-  turned off in Settings > General.
+  turned off in Settings > General. In 1.1.1 the list is two files in the Movies folder:
+  "Videos I have watched on Driftcast" to read, and a JSON file (`filename`, `title`,
+  `played`) under it.
+- **The list is kept out of sight** (new in 1.1.2): it is one JSON file inside the app's own
+  data folder, `~/Library/Application Support/Driftcast/watched-videos.json`, where nobody
+  looking through your folders comes across it, and Export (the File menu, or the button in
+  Settings > General) is how it comes out. The two files 1.1.1 put in Movies are taken in and
+  removed when the app opens; one edited so that it can't all be read is moved into the data
+  folder whole instead of being deleted. Out of sight is not locked: the file is plain JSON.
 
 ### Playback controls
 - Transport bar with Previous, back 10 s, Play/Pause, forward 10 s, Next, Stop, audio-track
@@ -266,7 +295,8 @@ marked "(new in 1.1.1)".
 ### Menus and shortcuts
 - **Driftcast:** About Driftcast (the full description, requirements, license and website),
   Check for Updates… (also a button in the About window), Settings…
-- **File:** Add Videos… (⌘O), New Playlist (⇧⌘N), Details (⌘I), Show in Finder (⇧⌘R), Export
+- **File:** Open… (⌘O) and Add Videos… (⇧⌘O) (new in 1.1.2; before, Add Videos… was ⌘O and
+  there was no Open…), New Playlist (⇧⌘N), Details (⌘I), Show in Finder (⇧⌘R), Export
   Watched Videos… (new in 1.1.1).
 - **View:** Show Details (⌥⌘I), plus the standard sidebar and toolbar items.
 - **Playback:** Play/Pause (⌘P), Stop (⌘.), Skip Forward/Back 10 Seconds (⌥→ / ⌥←), Skip
@@ -289,13 +319,23 @@ marked "(new in 1.1.1)".
   the app that touches a file on disk). New in 1.1.1: a file listed twice is moved once, and a
   file already deleted in the Finder just leaves the playlists. A file that can't be moved
   stays listed, with the system's reason shown and written to the error log.
-- **Right-click on a playlist:** Rename, Add Videos…, Delete Playlist.
+- **Right-click on a playlist:** Rename, Add Videos…, Delete Playlist. Since 1.1.2: New
+  Playlist and Delete Playlist come first, then Rename and Add Videos…; the menu is the
+  list's, not the name's, so it opens anywhere on the row; and a right-click in the empty
+  space under the playlists offers New Playlist. Delete Playlist takes the playlist out of
+  the sidebar at once, without asking; the videos' files are not touched, and the last
+  playlist can't be deleted.
 - In the list: Space plays or pauses, Return plays the selected video, Delete removes it from
   the playlist (the file stays).
+- **Select All** (new in 1.1.2): ⌘A selects every video in the playlist wherever the keyboard is
+  in the main window, the sidebar included; while text is being typed it selects the text.
+  Select All is also in the right-click menus. In 1.1.1, ⌘A worked only after a click in the
+  list.
 
 ### Settings
 - **General:** resume where you left off; play the next video automatically; keep a list of
-  the videos you watch, with Show in Finder (new in 1.1.1); look up posters
+  the videos you watch, with Show in Finder (new in 1.1.1; since 1.1.2 the button is
+  Export…); look up posters
   and details online, OMDb API key, show the poster and details for five seconds when a video starts;
   which ffmpeg to use (the built-in copy, or a folder of your
   own); check for updates automatically, last check, Check Now.
@@ -589,7 +629,7 @@ marked "(new in 1.1.1)".
 | `~/Library/Caches/Driftcast/Keyframes/` | keyframe indexes for copied video |
 | `~/Library/Caches/Driftcast/Metadata/`, `Artwork/` | film and show details and their posters |
 | `~/Library/Application Support/Driftcast/title-overrides.json` | titles corrected by hand |
-| `~/Movies/Videos I have watched on Driftcast.txt` and `.json` | the list of videos played, to read and as JSON (new in 1.1.1) |
+| `~/Library/Application Support/Driftcast/watched-videos.json` | the list of videos played (since 1.1.2; in 1.1.1 it is `~/Movies/Videos I have watched on Driftcast.txt` and `.json`) |
 | `~/Library/Logs/Driftcast/Errors.log` | the error log (new in 1.1.1) |
 | `$TMPDIR/DriftcastStreams/<pid>/<session>/` | HLS segments while a video plays; removed when it stops and at quit; folders of copies that are no longer running are cleaned at launch |
 | `~/Library/Preferences/com.leechsoftware.driftcast.plist` | settings |

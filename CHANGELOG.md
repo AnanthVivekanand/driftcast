@@ -3,6 +3,66 @@
 What is new and what was fixed in each version, newest first. Downloads and the notes for
 earlier versions are on the [releases page](https://github.com/leechsoftware/driftcast/releases).
 
+## 1.1.2 (20 November 2026)
+
+### New
+
+- **Open…:** there was no command called Open, and nothing in the window that looked like
+  opening a file. Videos came in through Add Videos… (⌘O) and a + button, and those only
+  listed a video: it still had to be found in the list and played. File > Open… (⌘O) and a
+  folder button beside the playlist's name now choose a video from your Mac, add it to the
+  playlist and play it, as opening a video from the Finder always has. Several videos or a
+  folder are added and the first one plays. A video that is already listed plays from its row
+  and isn't listed twice.
+- **Add Videos…** stays, for lining videos up without interrupting what is playing: the +
+  button beside the folder, and ⇧⌘O in the File menu (it was ⌘O).
+- **Select All:** ⌘A selected the videos only after a click in the list; after a click in the
+  sidebar it did nothing. It now selects every video in the playlist wherever the keyboard is
+  in the main window, and Select All is in the right-click menus. While you are typing a name
+  it still selects the text.
+- **Right-click in the list of playlists:** New Playlist and Delete Playlist now come first,
+  above Rename and Add Videos…, and the menu opens wherever on the row you click. A
+  right-click in the empty space under the playlists offers New Playlist. Before, the menu
+  had no New Playlist, and nothing came up in the empty space.
+
+### Changed
+
+- **A playlist for each season:** dropping or opening episodes of a show put them all in one
+  playlist named after the show, every season together. Each season now gets its own:
+  "Sopranos S1", "Sopranos S2", in episode order. One episode added on its own stays where
+  you drop it, unless its season already has a playlist, which it joins. A playlist you
+  already have that is named after the show and holds one season takes that season's name
+  the next time you add to the show; one that mixes seasons is left as it is.
+- **The list of videos you watch is out of sight:** 1.1.1 kept it as two files in your Movies
+  folder, where anyone looking through the folder could read what was watched. It is now kept
+  inside Driftcast's own data, and Export Watched Videos… (the File menu, or the Export…
+  button in Settings > General) is how you get it, as a spreadsheet. The two files in Movies
+  are taken in and removed the first time this version opens, and nothing in them is lost.
+  The list is hidden, not locked: someone who knows where an app keeps its data can open it.
+- **"I don't care about subtitles"** is now the first setting in Settings > Subtitles, and it
+  means what it says. It used to hide the notices only: with "Always turn on closed captions"
+  ticked as well, captions still came on. Now captions never come on by themselves and none
+  are searched for as a video starts, and the other subtitle settings are grayed out, titles
+  included, until you turn it off. They keep their values, and the Subtitles menu still works
+  for a single video. It is still off unless you turn it on.
+- **No caption bar for a video without captions:** the bar under the video said "No closed
+  captions in this video" and took room from the picture to say it. It now shows only when
+  the video has captions to choose from. Find Subtitles Online… is still in the Subtitles
+  menu and behind the playback bar's button.
+- **An episode's name on its own line:** the details panel wrote "Season 4, Episode 7:
+  Watching Too Much Television" as one line, which broke in the middle of the name. The name
+  is now under the season and episode.
+
+### Fixed
+
+- **The caption bar under the video was cut off:** the video window could be made, or come
+  back, short enough that the bar saying which captions a video has lost its lower half. The
+  window's smallest size didn't count its title bar. It does now, and a window that is too
+  short grows to show the whole bar. The same miscount brought the window back shorter by the
+  title bar's height each time casting ended.
+- **A folder opened twice from the Finder:** when the folder was reached through a link, the
+  second time played nothing. It plays the folder's first video from the list.
+
 ## 1.1.1 (19 November 2026)
 
 ### New

@@ -263,12 +263,12 @@ Conversion produces **Dolby Digital Plus 5.1** (640 kbps), lossless **FLAC** up 
 - **Find Subtitles Online:** search OpenSubtitles by exact file match and title, pick one, and it downloads and comes on. A free OpenSubtitles API key is required, and the app walks you through getting one.
 - **Your rules:** always on, on only when the audio is in another language, or off. A forced track in your language counts.
 - **Your size:** a slider in the Subtitles menu from 60% to 200%, applied on this Mac and on the Chromecast as you drag, and remembered between launches.
-- **"I don't care about subtitles"** hides every notice about them.
+- **"I don't care about subtitles"** keeps them from coming on or being searched for by themselves, hides every notice about them and grays out their settings.
 
 ## Playlists, playback and the rest
 
-- Any number of named playlists, with drag and drop for files and folders
-- Dropping several episodes of a show makes a playlist named after it, in episode order
+- Any number of named playlists, with drag and drop for files and folders, and Open… (⌘O) to choose a video and play it
+- Dropping several episodes of a show makes a playlist for each season, in episode order
 - Resume where you left off, watched marks, a progress bar on every video and autoplay of the next one
 - Right-click a video to remove it from the playlist, or to delete its file, which asks first and moves it to the Trash
 - Hover and drag preview frames on the timeline, which work for MKV and AVI too

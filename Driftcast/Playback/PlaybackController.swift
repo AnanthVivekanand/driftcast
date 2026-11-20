@@ -717,6 +717,26 @@ final class PlaybackController: ObservableObject {
         selectSubtitle(choice)
     }
 
+    /// Adds the videos or folders and plays the first of them: what Open… chose, and files
+    /// opened from the Finder. A video already listed plays from its existing row. False when
+    /// none of them is a video.
+    @discardableResult
+    func open(_ urls: [URL], into playlistID: Playlist.ID? = nil) -> Bool {
+        guard let first = library.addToPlay(urls, to: playlistID) else { return false }
+        play(first.item, queue: first.queue)
+        return true
+    }
+
+    /// File > Open… and the toolbar's folder button: choose a video from the Mac and play it.
+    func chooseAndOpen(into playlistID: Playlist.ID? = nil) {
+        let urls = library.chooseVideos(prompt: "Open", message: "Choose a video to play. Several videos, or a folder, are added to the playlist and the first one plays.")
+        guard !urls.isEmpty, !open(urls, into: playlistID) else { return }
+        let alert = NSAlert()
+        alert.messageText = "No videos were found"
+        alert.informativeText = "Choose a video, or a folder with videos in it. MKV, MP4, AVI, MOV and most other formats work."
+        alert.runModal()
+    }
+
     /// Asks for a subtitle file for a video (the playing one unless another is given).
     func chooseSubtitleFile(for item: MediaItem? = nil) {
         guard let item = item ?? nowPlaying else { return }
