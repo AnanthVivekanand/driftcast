@@ -12,6 +12,9 @@ enum WatchedList {
         var title: String
         var filename: String
         var played: Date
+        /// Where the file was, to tell apart two files of one name ("01.mkv" of two shows).
+        /// Kept in the list, not in the spreadsheet; lists written before 1.1.3 have none.
+        var path: String? = nil
     }
 
     /// What the exported spreadsheet is called, and what 1.1.1's files in Movies were called.
@@ -32,10 +35,10 @@ enum WatchedList {
     private static let queue = DispatchQueue(label: "com.leechsoftware.driftcast.watchedlist")
 
     /// Notes a video that has started playing. Off the main thread; a failure goes to the error log.
-    static func record(title: String, filename: String, played: Date = Date()) {
+    static func record(title: String, filename: String, path: String? = nil, played: Date = Date()) {
         queue.async {
             settle()
-            do { try add(Entry(title: title, filename: filename, played: played), in: folder) }
+            do { try add(Entry(title: title, filename: filename, played: played, path: path), in: folder) }
             catch { ErrorLog.record("Watched list", error: error) }
         }
     }
@@ -53,8 +56,16 @@ enum WatchedList {
 
     /// The list so far, oldest first. Empty when nothing has been played or the file can't be read.
     static func entries(in folder: URL = folder) -> [Entry] {
+        (try? readEntries(in: folder)) ?? []
+    }
+
+    /// The list so far, oldest first, or why the file there couldn't be read. Empty when
+    /// nothing has been played.
+    static func readEntries(in folder: URL = folder) throws -> [Entry] {
         flush()
-        return (try? Data(contentsOf: jsonURL(in: folder))).flatMap(decode)?.entries ?? []
+        let json = jsonURL(in: folder)
+        guard FileManager.default.fileExists(atPath: json.path) else { return [] }
+        return decode(try Data(contentsOf: json))?.entries ?? []
     }
 
     /// Adds an entry and rewrites the list. False when it was the same viewing as the last one.
@@ -62,18 +73,28 @@ enum WatchedList {
     static func add(_ entry: Entry, in folder: URL) throws -> Bool {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var entries = try load(in: folder)
-        if let last = entries.last, last.filename == entry.filename,
+        if let last = entries.last, isSameFile(last, entry),
            abs(entry.played.timeIntervalSince(last.played)) < sameViewing { return false }
         entries.append(entry)
         try Data(encode(entries).utf8).write(to: jsonURL(in: folder), options: .atomic)
         return true
     }
 
+    /// Same name, and the same folder when both entries say where the file was.
+    private static func isSameFile(_ a: Entry, _ b: Entry) -> Bool {
+        guard a.filename == b.filename else { return false }
+        guard let p = a.path, let q = b.path else { return true }
+        return p == q
+    }
+
     /// The entries of the list in `folder`. When the file there can't all be read, a copy of
     /// it is kept beside it first, since what is written next holds only the entries that could be.
+    /// A file that is there but can't be opened at all throws: written over, the whole list
+    /// was lost; this way the one viewing goes unrecorded and the error log says why.
     private static func load(in folder: URL) throws -> [Entry] {
         let json = jsonURL(in: folder)
-        guard let data = try? Data(contentsOf: json) else { return [] }
+        guard FileManager.default.fileExists(atPath: json.path) else { return [] }
+        let data = try Data(contentsOf: json)
         let read = decode(data)
         if read?.complete != true {
             let aside = unreadableURL(in: folder)
@@ -118,11 +139,13 @@ enum WatchedList {
 
     // MARK: The two forms
 
-    /// JSON written by hand so the keys keep their order: filename, title, played.
+    /// JSON written by hand so the keys keep their order: filename, title, played, and the
+    /// file's path when it is known.
     static func encode(_ entries: [Entry]) -> String {
         guard !entries.isEmpty else { return "[]\n" }
         let rows = entries.map {
-            "  {\n    \"filename\": \(quoted($0.filename)),\n    \"title\": \(quoted($0.title)),\n    \"played\": \(quoted(stamp.string(from: $0.played)))\n  }"
+            "  {\n    \"filename\": \(quoted($0.filename)),\n    \"title\": \(quoted($0.title)),\n    \"played\": \(quoted(stamp.string(from: $0.played)))"
+                + ($0.path.map { ",\n    \"path\": \(quoted($0))" } ?? "") + "\n  }"
         }
         return "[\n" + rows.joined(separator: ",\n") + "\n]\n"
     }
@@ -136,7 +159,7 @@ enum WatchedList {
             guard let row = row as? [String: Any],
                   let title = row["title"] as? String, let filename = row["filename"] as? String,
                   let played = (row["played"] as? String).flatMap(stamp.date(from:)) else { return nil }
-            return Entry(title: title, filename: filename, played: played)
+            return Entry(title: title, filename: filename, played: played, path: row["path"] as? String)
         }
         return (entries, entries.count == rows.count)
     }
@@ -177,7 +200,15 @@ enum WatchedList {
     /// File > Export Watched Videos…: the list as a CSV file, saved where the person chooses.
     static func exportCSV() {
         queue.sync { settle() }
-        let list = entries()
+        let list: [Entry]
+        do {
+            list = try readEntries()
+        } catch {
+            // Not "No videos have been played yet": there is a list, and it couldn't be opened.
+            ErrorLog.record("Export Watched Videos", "reading the list", error: error)
+            NSAlert(error: error).runModal()
+            return
+        }
         guard !list.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "No videos have been played yet"

@@ -12,8 +12,19 @@ struct MediaItem: Identifiable, Codable, Hashable {
     /// What the video is: "The Sopranos", season 4, episode 7. The title corrected by hand
     /// when there is one, else what the file name says.
     var parsedTitle: MediaTitle { TitleOverrides.title(for: url) ?? MediaTitle.parse(fileName: baseName) }
-    /// The name shown for the video in lists, windows and on the TV: "The Sopranos S4 E7".
-    var displayName: String { parsedTitle.displayName }
+    /// The name the person typed for the video in the list (right-click > Rename, or a
+    /// press held on the title), when they gave it one. It is shown as typed and changes
+    /// nothing about what the video is taken to be: details are still looked up by `parsedTitle`.
+    var givenName: String? { TitleOverrides.name(for: url) }
+    /// The name shown for the video in lists, windows and on the TV: "The Sopranos S4 E7", or
+    /// the name the person gave it.
+    var displayName: String { givenName ?? parsedTitle.displayName }
+    /// The two lines on the TV's own pause and seek panel (`MediaTitle.tvLines`). A name the
+    /// person gave is the one line: it may say all there is to say ("The Sopranos (last)").
+    func tvLines(lookedUp: Bool) -> (title: String, subtitle: String?) {
+        if let givenName { return (givenName, nil) }
+        return parsedTitle.tvLines(lookedUp: lookedUp)
+    }
     var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
 
     init(url: URL) { self.url = url }
@@ -39,13 +50,20 @@ struct WatchProgress: Codable, Hashable {
 
     var fraction: Double { duration > 0 ? min(1, position / duration) : 0 }
 
-    /// Where a video counts as finished: where its end credits start. A file with a credits
-    /// chapter says exactly (less a few seconds for a stop pressed as they begin). Otherwise
-    /// the last 4% is taken as the credits, at least 30 seconds and at most a tenth: about
-    /// five minutes of a two-hour film, two of a 54-minute episode, a little before its credits.
+    /// Where the end credits are taken to start. A file with a credits chapter says exactly.
+    /// Otherwise the last 4% is taken as the credits, at least 30 seconds and at most a tenth:
+    /// about five minutes of a two-hour film, two of a 54-minute episode, a little before its
+    /// credits.
+    static func creditsPoint(duration: Double, creditsStart: Double? = nil) -> Double {
+        if let c = creditsStart, c > duration / 2, c < duration { return c }
+        return duration - min(max(30, duration * 0.04), duration * 0.1)
+    }
+
+    /// Where a video counts as finished: where its end credits start, less a few seconds
+    /// before a credits chapter for a stop pressed as they begin.
     static func finishPoint(duration: Double, creditsStart: Double? = nil) -> Double {
         if let c = creditsStart, c > duration / 2, c < duration { return max(duration / 2, c - 10) }
-        return duration - min(max(30, duration * 0.04), duration * 0.1)
+        return creditsPoint(duration: duration)
     }
 }
 
@@ -63,6 +81,7 @@ final class LibraryFile: @unchecked Sendable {
     private var seen: Date?
     private var reportedAnother = false
     private var failing = false
+    private var failedAside = false
 
     init(url: URL) { self.url = url }
 
@@ -70,12 +89,62 @@ final class LibraryFile: @unchecked Sendable {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
+    /// What reading the file found.
+    enum Contents {
+        case none
+        case data(Data)
+        /// The file is there but couldn't be read: it belongs to another user, has lost its
+        /// permissions, or the disk gave an error.
+        case unreadable(Error)
+    }
+
     func read() -> Data? {
+        if case .data(let data) = contents() { return data }
+        return nil
+    }
+
+    /// The file's bytes, telling a file that isn't there from one that couldn't be read. Taken
+    /// alike, the second was replaced by an empty list at the first save.
+    func contents() -> Contents {
         queue.sync {
-            let data = try? Data(contentsOf: url)
             seen = modified
-            return data
+            guard FileManager.default.fileExists(atPath: url.path) else { return .none }
+            do { return .data(try Data(contentsOf: url)) } catch { return .unreadable(error) }
         }
+    }
+
+    /// Moves the file out of the way (`setAside(_:)`) in its turn with the writes. Where it went,
+    /// or nil when it couldn't be moved, which is logged once: it is tried at every save.
+    func setAside() -> URL? {
+        queue.sync {
+            do {
+                let aside = try Self.setAside(url)
+                seen = modified
+                return aside
+            } catch {
+                if !failedAside { ErrorLog.record("Playlists", "setting aside the file that couldn't be read", error: error) }
+                failedAside = true
+                return nil
+            }
+        }
+    }
+
+    /// Moves a file that couldn't be used to a name of its own beside it ("library.unreadable.json",
+    /// then "library.unreadable 2.json"), so that nothing written later replaces it, nor an
+    /// earlier one set aside. A rename in the same folder, which works on a file that can't
+    /// be read. Answers where it went.
+    static func setAside(_ url: URL) throws -> URL {
+        let fm = FileManager.default
+        let base = url.deletingPathExtension().lastPathComponent + ".unreadable"
+        var aside: URL
+        var n = 1
+        repeat {
+            aside = url.deletingLastPathComponent().appendingPathComponent(n == 1 ? base : "\(base) \(n)")
+                .appendingPathExtension(url.pathExtension)
+            n += 1
+        } while fm.fileExists(atPath: aside.path)
+        try fm.moveItem(at: url, to: aside)
+        return aside
     }
 
     /// The file as it now stands is this copy's doing (it was just moved aside, say).
@@ -101,14 +170,54 @@ final class LibraryFile: @unchecked Sendable {
     }
 }
 
+/// The orders Sort in the right-click menu can put a playlist in.
+enum PlaylistOrder: CaseIterable {
+    /// By the name each video is shown by, numbers in counting order ("E2" before "E10").
+    case name
+    /// By when each file arrived in its folder (the Finder's Date Added), the newest first.
+    case dateAdded
+    /// What is still to watch first, finished videos after it; otherwise as they were.
+    case unwatchedFirst
+
+    var label: String {
+        switch self {
+        case .name: return "By Name"
+        case .dateAdded: return "By Date Added"
+        case .unwatchedFirst: return "Unwatched First"
+        }
+    }
+}
+
 /// Playlists plus last-position tracking, persisted as JSON in Application Support.
 @MainActor
 final class Library: ObservableObject {
     @Published var playlists: [Playlist] = []
-    @Published var selection: Playlist.ID? { didSet { if oldValue != selection { save() } } }
+    @Published var selection: Playlist.ID? { didSet { if oldValue != selection, !isLoading { save(deliberately: false) } } }
     @Published var progress: [String: WatchProgress] = [:]
     /// Files the user has finished, so rows can show a "watched" mark.
     @Published var watched: Set<String> = []
+
+    /// The video to select and scroll to after videos were added (dropped, chosen, opened):
+    /// the first of them. `count` makes every add a change, the same video twice included.
+    struct Reveal: Equatable {
+        let item: MediaItem.ID
+        let count: Int
+    }
+    @Published private(set) var reveal: Reveal?
+
+    /// Selects a video in the list and brings it into view (Next and Previous Video do this
+    /// for the one they start), when the playlist on show has it.
+    func revealItem(_ id: MediaItem.ID) {
+        reveal = Reveal(item: id, count: (reveal?.count ?? 0) + 1)
+    }
+
+    /// What the person should be told, once, about the saved playlists: that they couldn't be
+    /// read at launch, and where the file is now. The window shows it and sets it back to nil.
+    @Published var loadProblem: String?
+
+    /// The window's undo manager, which the window hands over, so that Edit > Undo can take
+    /// back changes to the playlists (Remove, Move, Sort, Delete Playlist, Rename and the rest).
+    weak var undoManager: UndoManager?
 
     static let videoExtensions: Set<String> = [
         "mkv", "mp4", "m4v", "mov", "avi", "wmv", "flv", "webm", "ts", "m2ts", "mts", "mpg", "mpeg",
@@ -125,9 +234,19 @@ final class Library: ObservableObject {
 
     private var saveWork: DispatchWorkItem?
     private let file: LibraryFile
+    /// While the saved library is being read in: what was just read needs no writing back.
+    private var isLoading = false
+    /// The saved playlists are there but couldn't be read. Nothing is written over them: the
+    /// list starts empty, a launch that changes nothing leaves the file as it was (a passing
+    /// disk error reads fine next time), and the first change the person makes moves the file
+    /// aside before the new list is saved. Without this the empty list replaced it half a
+    /// second after launch.
+    private var unreadFile = false
 
-    init() {
-        file = LibraryFile(url: Self.storeURL)
+    /// `storeURL` is for the tests, which keep a library of their own; the app's is in
+    /// Application Support.
+    init(storeURL: URL? = nil) {
+        file = LibraryFile(url: storeURL ?? Self.storeURL)
         load()
         if playlists.isEmpty { playlists = [Playlist(name: "Playlist")] }
         if selection == nil || !playlists.contains(where: { $0.id == selection }) { selection = playlists.first?.id }
@@ -145,27 +264,59 @@ final class Library: ObservableObject {
     }
 
     private func load() {
-        guard let data = file.read() else { return }
-        guard let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
+        let data: Data
+        switch file.contents() {
+        case .none:
+            return
+        case .unreadable(let error):
+            ErrorLog.record("Playlists", "reading them", error: error)
+            unreadFile = true
+            loadProblem = "Driftcast couldn't open your saved playlists. \(error.localizedDescription) They are left as they are. If you change the list, the old file is first set aside in Driftcast's folder in Application Support."
+            return
+        case .data(let bytes):
+            data = bytes
+        }
+        let stored: Stored
+        do {
+            stored = try JSONDecoder().decode(Stored.self, from: data)
+        } catch {
             // Kept aside rather than overwritten by the empty library this run starts with.
-            let aside = Self.storeURL.deletingPathExtension().appendingPathExtension("unreadable.json")
-            try? FileManager.default.removeItem(at: aside)
-            try? FileManager.default.moveItem(at: Self.storeURL, to: aside)
-            file.noteCurrent()
+            ErrorLog.record("Playlists", "reading them", error: error)
+            if let aside = file.setAside() {
+                ErrorLog.record("Playlists", "The file that couldn't be read was kept as \(aside.lastPathComponent).")
+                loadProblem = "Driftcast couldn't read your saved playlists, so the list starts empty. The old file was kept as \u{201C}\(aside.lastPathComponent)\u{201D} in Driftcast's folder in Application Support."
+            } else {
+                unreadFile = true
+                loadProblem = "Driftcast couldn't read your saved playlists. They are left as they are."
+            }
             return
         }
         playlists = stored.playlists
         progress = stored.progress
         watched = Set(stored.watched ?? [])
+        // Without this the selection's change scheduled a save of the list just read, half a
+        // second after every launch: a write for nothing, and one that could land on top of
+        // a newer list written in between.
+        isLoading = true
         selection = stored.selection
+        isLoading = false
     }
 
     /// Coalesces bursts of changes into one write.
-    func save() {
+    func save() { save(deliberately: true) }
+
+    /// `deliberately` is false for what happens by itself (the selection set at launch), which
+    /// doesn't move a file that couldn't be read out of the way.
+    private func save(deliberately: Bool) {
+        if unreadFile {
+            guard deliberately, let aside = file.setAside() else { return }
+            ErrorLog.record("Playlists", "The saved playlists that couldn't be read were kept as \(aside.lastPathComponent) before the new list was saved.")
+            unreadFile = false
+        }
         saveWork?.cancel()
-        let snapshot = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
+        let stored = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
         let file = file
-        let work = DispatchWorkItem { file.write { try JSONEncoder().encode(snapshot) } }
+        let work = DispatchWorkItem { file.write { try JSONEncoder().encode(stored) } }
         saveWork = work
         file.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
@@ -174,11 +325,12 @@ final class Library: ObservableObject {
     /// run and the last resume position or playlist edit would be lost. It waits its turn
     /// behind a delayed write that has already begun, so that older list can't land on top.
     func saveNow() {
+        guard !unreadFile else { return }
         saveWork?.cancel()
         saveWork = nil
-        let snapshot = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
+        let stored = Stored(playlists: playlists, progress: progress, watched: Array(watched), selection: selection)
         let file = file
-        file.queue.sync { file.write { try JSONEncoder().encode(snapshot) } }
+        file.queue.sync { file.write { try JSONEncoder().encode(stored) } }
     }
 
     // MARK: Playlists
@@ -190,8 +342,10 @@ final class Library: ObservableObject {
         var n = 2
         while playlists.contains(where: { $0.name == candidate }) { candidate = "\(base) \(n)"; n += 1 }
         let p = Playlist(name: candidate)
+        let before = snapshot
         playlists.append(p)
         selection = p.id
+        noteUndo("New Playlist", before)
         save()
         return p.id
     }
@@ -199,22 +353,155 @@ final class Library: ObservableObject {
     func rename(_ id: Playlist.ID, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let i = playlists.firstIndex(where: { $0.id == id }) else { return }
+        let before = snapshot
         playlists[i].name = trimmed
+        noteUndo("Rename Playlist", before)
         save()
     }
 
     func deletePlaylist(_ id: Playlist.ID) {
         guard playlists.count > 1 else { return }
+        let before = snapshot
         playlists.removeAll { $0.id == id }
         if selection == id { selection = playlists.first?.id }
+        noteUndo("Delete Playlist", before)
         save()
+    }
+
+    /// Puts the playlists in another order in the sidebar, as `move(in:from:to:)` does videos.
+    func movePlaylist(from source: IndexSet, to destination: Int) {
+        let before = snapshot
+        playlists = Self.moving(playlists, from: source, to: destination)
+        noteUndo("Move Playlist", before)
+        save()
+    }
+
+    /// `items` with those at `source` taken out and put back before what was at `destination`,
+    /// as a list's drag reports it.
+    private static func moving<T>(_ items: [T], from source: IndexSet, to destination: Int) -> [T] {
+        var items = items
+        let valid = source.filter { items.indices.contains($0) }
+        let moving = valid.sorted().map { items[$0] }
+        for index in valid.sorted(by: >) { items.remove(at: index) }
+        let target = destination - valid.filter { $0 < destination }.count
+        items.insert(contentsOf: moving, at: max(0, min(target, items.count)))
+        return items
     }
 
     // MARK: Items
 
     /// Expands folders recursively and keeps only media files, sorted the way Finder sorts.
+    ///
+    /// Each file comes once. Selecting all in a Finder list with a folder opened by its
+    /// triangle drags the folder and its files both, and a folder reached through a link names
+    /// the same files by other paths; listed twice, each had two rows, and a single episode
+    /// made a season playlist of itself. The first path a file comes by is the one kept.
+    /// Where episodes added later go in their season's list. While the list is still in the
+    /// order of its file names (nobody has dragged its rows about), each goes to its place in
+    /// that order, so episodes 1 to 10 added after 11 to 13 come first. A list that has been
+    /// rearranged by hand is left as it is, and they go at the end.
+    static func merged(_ new: [MediaItem], into old: [MediaItem]) -> [MediaItem] {
+        func comesFirst(_ a: MediaItem, _ b: MediaItem) -> Bool {
+            a.url.lastPathComponent.localizedStandardCompare(b.url.lastPathComponent) == .orderedAscending
+        }
+        guard !old.isEmpty, zip(old, old.dropFirst()).allSatisfy({ !comesFirst($1, $0) }) else { return old + new }
+        var all = old
+        for item in new {
+            all.insert(item, at: all.firstIndex { comesFirst(item, $0) } ?? all.count)
+        }
+        return all
+    }
+
+    // MARK: A playlist of their own
+
+    /// What a playlist made for these videos is called: the season of a show ("The Sopranos
+    /// S4", for The.Sopranos.S04E12), the show when they span seasons, the film's own title, or
+    /// what their names share. Nil when they have nothing in common.
+    static func playlistName(for files: [URL]) -> String? {
+        let names = files.map { $0.deletingPathExtension().lastPathComponent }
+        guard !names.isEmpty else { return nil }
+        func shared(_ values: [String?]) -> String? {
+            guard let first = values.first ?? nil else { return nil }
+            return values.allSatisfy { $0?.compare(first, options: .caseInsensitive) == .orderedSame } ? first : nil
+        }
+        if let season = shared(names.map(SeriesName.seasonPlaylist(forFileName:))) { return season }
+        if let show = shared(names.map(SeriesName.title(fromFileName:))) { return show }
+        let films = names.map { name -> String? in
+            let title = MediaTitle.parse(fileName: name)
+            return title.isEpisode || title.shownTitle.isEmpty ? nil : title.shownTitle
+        }
+        if let film = shared(films) { return film }
+        return SeriesName.commonTitle(names)
+    }
+
+    private func playlistIndex(named name: String) -> Int? {
+        playlists.firstIndex { $0.name.compare(name, options: .caseInsensitive) == .orderedSame }
+    }
+
+    /// Videos dropped on the empty part of the sidebar: a playlist of their own, named after
+    /// them, shown. A playlist that already has that name takes them instead, so a season
+    /// isn't listed twice; episodes of several seasons get a playlist each, as anywhere else.
+    @discardableResult
+    func addToNewPlaylist(_ urls: [URL]) -> [MediaItem] {
+        let files = Self.expand(urls)
+        guard !files.isEmpty else { return [] }
+        let name = Self.playlistName(for: files)
+        let spansSeasons = name != nil && Set(files.map { SeriesName.seasonPlaylist(forFileName: $0.deletingPathExtension().lastPathComponent) }).count > 1
+        if let name, !spansSeasons, let existing = playlistIndex(named: name) {
+            let id = playlists[existing].id
+            let added = add(files, to: id)
+            selection = id
+            return added
+        }
+        // Seasons are split by `add`, which names an untouched playlist after the first one.
+        let id = newPlaylist(named: spansSeasons ? nil : name)
+        let added = add(files, to: id)
+        if let i = playlists.firstIndex(where: { $0.id == id }), playlists[i].items.isEmpty, playlists.count > 1 {
+            // Every episode joined a season already listed: the new playlist is not needed.
+            playlists.remove(at: i)
+            if selection == id { selection = playlists.first { p in added.contains { a in p.items.contains { $0.id == a.id } } }?.id ?? playlists.first?.id }
+            save()
+        }
+        return added
+    }
+
+    /// Rows dragged from the list onto the empty part of the sidebar: moved to a playlist of
+    /// their own, named after them (or one of that name that is already there), which is shown.
+    func moveToNewPlaylist(_ itemIDs: Set<MediaItem.ID>, from source: Playlist.ID, at place: Int? = nil) {
+        guard let s = playlists.firstIndex(where: { $0.id == source }) else { return }
+        let moving = playlists[s].items.filter { itemIDs.contains($0.id) }
+        guard !moving.isEmpty else { return }
+        let name = Self.playlistName(for: moving.map(\.url))
+        let target: Playlist.ID
+        if let name, let existing = playlistIndex(named: name), playlists[existing].id != source {
+            target = playlists[existing].id
+        } else {
+            let before = Set(playlists.map(\.id))
+            target = newPlaylist(named: name)
+            settle(newSince: before, at: place)
+        }
+        moveItems(itemIDs, from: source, to: target)
+        selection = target
+        if let first = moving.first { revealItem(first.id) }
+    }
+
+    /// Puts the playlists a drop just made where the drop's line was drawn in the sidebar:
+    /// before what was at `place` when the drop came. Left at the foot with no place given.
+    func settle(newSince before: Set<Playlist.ID>, at place: Int?) {
+        guard let place, place >= 0 else { return }
+        let made = playlists.filter { !before.contains($0.id) }
+        guard !made.isEmpty, place < playlists.count - made.count else { return }
+        playlists.removeAll { !before.contains($0.id) }
+        playlists.insert(contentsOf: made, at: place)
+        save()
+    }
+
     static func expand(_ urls: [URL]) -> [URL] {
         var out: [URL] = []
+        var seen: Set<String> = []
+        func keep(_ url: URL) {
+            if seen.insert(url.resolvingSymlinksInPath().standardizedFileURL.path).inserted { out.append(url) }
+        }
         let fm = FileManager.default
         for url in urls {
             var isDir: ObjCBool = false
@@ -225,9 +512,9 @@ final class Library: ObservableObject {
                 var found: [URL] = []
                 for case let f as URL in e where videoExtensions.contains(f.pathExtension.lowercased()) { found.append(f) }
                 found.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-                out += found
+                found.forEach(keep)
             } else if videoExtensions.contains(url.pathExtension.lowercased()) {
-                out.append(url)
+                keep(url)
             }
         }
         return out
@@ -235,37 +522,64 @@ final class Library: ObservableObject {
 
     /// Adds videos to a playlist. Two or more files from the same show (see `SeriesName`) go
     /// into a playlist named after the show instead, which is created if needed and selected.
+    ///
+    /// `index` is where in the playlist they go (dropped between two rows); without one, at
+    /// the end. With no playlist named and none selected (a click on the sidebar's empty space
+    /// clears it), they go into the first playlist, which is then shown, as `addToPlay` does:
+    /// Add Videos… used to drop the files chosen without a word.
     @discardableResult
-    func add(_ urls: [URL], to playlistID: Playlist.ID? = nil) -> [MediaItem] {
-        guard let id = playlistID ?? selection, playlists.contains(where: { $0.id == id }) else { return [] }
+    func add(_ urls: [URL], to playlistID: Playlist.ID? = nil, at index: Int? = nil) -> [MediaItem] {
+        guard let id = playlistID ?? selection ?? playlists.first?.id, playlists.contains(where: { $0.id == id }) else { return [] }
+        if selection == nil { selection = id }
         let files = Self.expand(urls)
         let (series, rest) = SeriesName.group(files.map { $0.deletingPathExtension().lastPathComponent })
+        let before = snapshot
         var added: [MediaItem] = []
         var firstSeriesPlaylist: Playlist.ID?
+        var insertAt = index
+        // Into the playlist dropped on, where it was dropped. Episodes into their own season's
+        // playlist, in episode order (see `merged`); anything else at the end.
+        func put(_ items: [MediaItem], into p: Int) {
+            if playlists[p].id == id, let at = insertAt {
+                let i = max(0, min(at, playlists[p].items.count))
+                playlists[p].items.insert(contentsOf: items, at: i)
+                insertAt = i + items.count
+            } else if !items.isEmpty, items.allSatisfy({ item in
+                SeriesName.seasonPlaylist(forFileName: item.baseName)?.compare(playlists[p].name, options: .caseInsensitive) == .orderedSame
+            }) {
+                playlists[p].items = Self.merged(items, into: playlists[p].items)
+            } else {
+                playlists[p].items += items
+            }
+        }
 
         for (n, group) in series.enumerated() {
             if group.season != nil { nameBySeason(show: group.show) }
-            let index: Int
+            let season: Int
             if let existing = playlists.firstIndex(where: { $0.name.compare(group.title, options: .caseInsensitive) == .orderedSame }) {
-                index = existing
+                season = existing
             } else if n == 0, rest.isEmpty,
                       let target = playlists.firstIndex(where: { $0.id == id }),
                       playlists[target].items.isEmpty, Self.isDefaultName(playlists[target].name) {
                 // An untouched empty playlist becomes the first season's rather than being left behind.
                 playlists[target].name = group.title
-                index = target
+                season = target
             } else {
                 playlists.append(Playlist(name: group.title))
-                index = playlists.count - 1
+                season = playlists.count - 1
             }
-            let present = Set(playlists[index].items.map(\.url))
+            let present = Set(playlists[season].items.map(\.url))
             let episodes = group.members.map { files[$0] }
                 .filter { !present.contains($0) }
                 .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
                 .map { MediaItem(url: $0) }
-            playlists[index].items += episodes
+            if playlists[season].id == id, insertAt != nil {
+                put(episodes, into: season)
+            } else {
+                playlists[season].items = Self.merged(episodes, into: playlists[season].items)
+            }
             added += episodes
-            if firstSeriesPlaylist == nil { firstSeriesPlaylist = playlists[index].id }
+            if firstSeriesPlaylist == nil { firstSeriesPlaylist = playlists[season].id }
         }
 
         if !rest.isEmpty, let target = playlists.firstIndex(where: { $0.id == id }) {
@@ -278,7 +592,7 @@ final class Library: ObservableObject {
                       home != target else { staying.append(file); continue }
                 if !playlists[home].items.contains(where: { $0.url == file }) {
                     let item = MediaItem(url: file)
-                    playlists[home].items.append(item)
+                    playlists[home].items = Self.merged([item], into: playlists[home].items)
                     added.append(item)
                 }
                 if firstSeriesPlaylist == nil { firstSeriesPlaylist = playlists[home].id }
@@ -287,10 +601,18 @@ final class Library: ObservableObject {
             // listed twice.
             let present = Set(playlists[target].items.map(\.url))
             let items = staying.filter { !present.contains($0) }.map { MediaItem(url: $0) }
-            playlists[target].items += items
+            put(items, into: target)
             added += items
         }
         if let firstSeriesPlaylist { selection = firstSeriesPlaylist }
+        // What the list then selects and scrolls to: the first video added. When all of them
+        // were listed already, the first of them in the playlist on show.
+        let wanted = Set(files)
+        let listed = [selection, id].lazy.compactMap { shown in
+            self.playlists.first { $0.id == shown }?.items.first { wanted.contains($0.url) }
+        }.first
+        if let first = added.first ?? listed { reveal = Reveal(item: first.id, count: (reveal?.count ?? 0) + 1) }
+        noteUndo("Add Videos", before)
         save()
         return added
     }
@@ -314,7 +636,76 @@ final class Library: ObservableObject {
 
     func remove(_ itemIDs: Set<MediaItem.ID>, from playlistID: Playlist.ID) {
         guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        let before = snapshot
         playlists[i].items.removeAll { itemIDs.contains($0.id) }
+        noteUndo("Remove from Playlist", before)
+        save()
+    }
+
+    /// Remove Missing Videos: the rows of a playlist whose file is gone from a disk that is
+    /// connected (deleted, or moved or renamed in the Finder). A file on a disk that isn't
+    /// connected is only away, and stays listed. A removed video's place and watched mark are
+    /// kept, for when it comes back. Answers the rows removed.
+    @discardableResult
+    func removeMissing(from playlistID: Playlist.ID) -> [MediaItem] {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return [] }
+        let gone = playlists[i].items.filter { Self.isGone($0.url) }
+        guard !gone.isEmpty else { return [] }
+        let before = snapshot
+        let ids = Set(gone.map(\.id))
+        playlists[i].items.removeAll { ids.contains($0.id) }
+        noteUndo("Remove Missing Videos", before)
+        save()
+        return gone
+    }
+
+    /// Whether a file is gone rather than away: it isn't there, and the disk it was on is.
+    nonisolated static func isGone(_ url: URL) -> Bool {
+        !FileManager.default.fileExists(atPath: url.path) && isOnConnectedDisk(url)
+    }
+
+    /// Whether the disk a path is on is connected. A disk other than the startup disk appears
+    /// as a folder in /Volumes while it is; when it isn't, that folder is missing, or left
+    /// behind empty and no longer a disk of its own.
+    nonisolated static func isOnConnectedDisk(_ url: URL) -> Bool {
+        let parts = url.standardizedFileURL.pathComponents          // "/", "Volumes", "Films", …
+        guard parts.count > 2, parts[1] == "Volumes" else { return true }
+        let disk = URL(fileURLWithPath: "/Volumes", isDirectory: true).appendingPathComponent(parts[2], isDirectory: true)
+            .resolvingSymlinksInPath()                              // the startup disk's own name links to /
+        return (try? disk.resourceValues(forKeys: [.isVolumeKey]))?.isVolume == true
+    }
+
+    /// Locate…: a listed video whose file was moved or renamed is pointed at where it is now.
+    /// Every row of that file follows, in every playlist, and so do its place, its watched mark
+    /// and the names given to it, which are all kept by the file's path. A playlist that also
+    /// listed the new file keeps only the located row. Nothing on disk is touched.
+    ///
+    /// When the new path has a place or a watched mark of its own (it was played there), that
+    /// one is kept. Edit > Undo can't take this back, so the steps before it are forgotten:
+    /// undoing one of them would put the old path back.
+    func relocate(_ item: MediaItem, to newURL: URL) {
+        let old = item.url
+        guard old.standardizedFileURL != newURL.standardizedFileURL else { return }
+        for p in playlists.indices where playlists[p].items.contains(where: { $0.url == old }) {
+            playlists[p].items.removeAll { $0.url == newURL }
+            var listed = false
+            playlists[p].items = playlists[p].items.compactMap { row in
+                guard row.url == old else { return row }
+                if listed { return nil }   // the file was listed twice: once is enough
+                listed = true
+                var moved = row
+                moved.url = newURL
+                return moved
+            }
+        }
+        let place = progress.removeValue(forKey: old.path)
+        let finished = watched.remove(old.path) != nil
+        if progress[newURL.path] == nil, !watched.contains(newURL.path) {
+            if finished { watched.insert(newURL.path) } else if let place { progress[newURL.path] = place }
+        }
+        TitleOverrides.move(from: old, to: newURL)
+        undoManager?.removeAllActions(withTarget: self)
+        objectWillChange.send()   // a name given to the file is read as rows draw
         save()
     }
 
@@ -346,6 +737,9 @@ final class Library: ObservableObject {
             progress.removeValue(forKey: path)
             watched.remove(path)
         }
+        // The files are in the Trash, which Edit > Undo here can't bring back; the steps
+        // before are forgotten too, since undoing one would list the trashed files again.
+        undoManager?.removeAllActions(withTarget: self)
         save()
         return failed
     }
@@ -362,26 +756,141 @@ final class Library: ObservableObject {
             && fm.fileExists(atPath: url.deletingLastPathComponent().path)
     }
 
-    /// Moves videos to the end of another playlist.
+    /// Moves videos to the end of another playlist. One the other playlist already lists
+    /// leaves this one and isn't listed there twice.
     func moveItems(_ itemIDs: Set<MediaItem.ID>, from source: Playlist.ID, to destination: Playlist.ID) {
         guard source != destination,
               let s = playlists.firstIndex(where: { $0.id == source }),
               let d = playlists.firstIndex(where: { $0.id == destination }) else { return }
         let moving = playlists[s].items.filter { itemIDs.contains($0.id) }
         guard !moving.isEmpty else { return }
+        let before = snapshot
         playlists[s].items.removeAll { itemIDs.contains($0.id) }
-        playlists[d].items += moving
+        var present = Set(playlists[d].items.map(\.url.standardizedFileURL.path))
+        playlists[d].items += moving.filter { present.insert($0.url.standardizedFileURL.path).inserted }
+        noteUndo("Move to Playlist", before)
         save()
     }
 
     func move(in playlistID: Playlist.ID, from source: IndexSet, to destination: Int) {
         guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
-        var items = playlists[i].items
-        let moving = source.sorted().map { items[$0] }
-        for index in source.sorted(by: >) { items.remove(at: index) }
-        let target = destination - source.filter { $0 < destination }.count
-        items.insert(contentsOf: moving, at: max(0, min(target, items.count)))
-        playlists[i].items = items
+        let before = snapshot
+        playlists[i].items = Self.moving(playlists[i].items, from: source, to: destination)
+        noteUndo("Move", before)
+        save()
+    }
+
+    /// Names a video as the person typed it (right-click > Rename, or a press held on the
+    /// title). The name goes with the file, so it is the same in every playlist, in the
+    /// window, on the TV and in the watched list. Nothing typed, or the name the video has
+    /// anyway, goes back to the name made from the file.
+    func setName(_ typed: String, for url: URL) {
+        let name = TitleOverrides.cleaned(typed, insteadOf: MediaItem(url: url).parsedTitle.displayName)
+        let old = TitleOverrides.name(for: url)
+        guard name != old else { return }
+        TitleOverrides.setName(name, for: url)
+        objectWillChange.send()   // rows read the name as they draw; nothing published holds it
+        noteNameUndo(old, for: url)
+    }
+
+    /// Edit > Undo after a rename: the name the video had before, and Redo the one after.
+    private func noteNameUndo(_ name: String?, for url: URL) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { library in
+            let now = TitleOverrides.name(for: url)
+            TitleOverrides.setName(name, for: url)
+            library.objectWillChange.send()
+            library.noteNameUndo(now, for: url)
+        }
+        undoManager.setActionName("Rename")
+    }
+
+    // MARK: Undo
+
+    /// The playlists as they were before a change, for Edit > Undo to put back.
+    private struct Snapshot {
+        var playlists: [Playlist]
+        var selection: Playlist.ID?
+    }
+
+    private var snapshot: Snapshot { Snapshot(playlists: playlists, selection: selection) }
+
+    /// Registers the undo of a change to the playlists, when it changed them. Every change to
+    /// the playlists is registered or, when it can't be undone (Delete File, Locate…), forgets
+    /// the steps before it, so that putting back an earlier list never undoes a later change
+    /// along with it. Changes made in one click (a new playlist and the videos moved into it)
+    /// are one step, as the undo manager groups them by event.
+    private func noteUndo(_ action: String, _ before: Snapshot) {
+        guard let undoManager, playlists != before.playlists else { return }
+        undoManager.registerUndo(withTarget: self) { library in library.restore(before, action: action) }
+        undoManager.setActionName(action)
+    }
+
+    private func restore(_ earlier: Snapshot, action: String) {
+        let now = snapshot
+        // Subtitles attached since then (found or downloaded as a video played) stay attached.
+        var attached: [MediaItem.ID: [URL]] = [:]
+        for item in playlists.lazy.flatMap(\.items) where !item.extraSubtitles.isEmpty { attached[item.id] = item.extraSubtitles }
+        playlists = earlier.playlists.map { playlist in
+            var playlist = playlist
+            for i in playlist.items.indices {
+                for subtitle in attached[playlist.items[i].id] ?? [] where !playlist.items[i].extraSubtitles.contains(subtitle) {
+                    playlist.items[i].extraSubtitles.append(subtitle)
+                }
+            }
+            return playlist
+        }
+        if let shown = earlier.selection, playlists.contains(where: { $0.id == shown }) {
+            selection = shown
+        } else if !playlists.contains(where: { $0.id == selection }) {
+            selection = playlists.first?.id
+        }
+        noteUndo(action, now)   // what Redo puts back
+        save()
+    }
+
+    /// When a file arrived in its folder, as the Finder's Date Added has it; for a disk that
+    /// doesn't keep that, when the file was made.
+    nonisolated static func dateAdded(_ url: URL) -> Date? {
+        let values = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
+        return values?.addedToDirectoryDate ?? values?.creationDate
+    }
+
+    /// Puts a playlist in order, once (right-click > Sort). The order is still the person's
+    /// to change by dragging, and nothing keeps it sorted as videos are added. Videos that
+    /// compare the same stay in the order they were in.
+    func sort(_ playlistID: Playlist.ID, by order: PlaylistOrder, dateAdded: (URL) -> Date? = Library.dateAdded) {
+        guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        let items = playlists[i].items
+        let before: (MediaItem, MediaItem) -> Bool?   // nil when the two compare the same
+        switch order {
+        case .name:
+            before = { a, b in
+                let c = a.displayName.localizedStandardCompare(b.displayName)
+                return c == .orderedSame ? nil : c == .orderedAscending
+            }
+        case .dateAdded:
+            let dates = Dictionary(items.map { ($0.id, dateAdded($0.url)) }, uniquingKeysWith: { first, _ in first })
+            before = { a, b in
+                // A file that can't be found has no date and goes last.
+                switch (dates[a.id] ?? nil, dates[b.id] ?? nil) {
+                case let (x?, y?): return x == y ? nil : x > y
+                case (nil, nil): return nil
+                case (let x, _): return x != nil
+                }
+            }
+        case .unwatchedFirst:
+            let watched = watched
+            before = { a, b in
+                let x = watched.contains(a.url.path), y = watched.contains(b.url.path)
+                return x == y ? nil : !x
+            }
+        }
+        let sorted = items.enumerated().sorted { a, b in before(a.element, b.element) ?? (a.offset < b.offset) }.map(\.element)
+        guard sorted != items else { return }
+        let earlier = snapshot
+        playlists[i].items = sorted
+        noteUndo("Sort", earlier)
         save()
     }
 

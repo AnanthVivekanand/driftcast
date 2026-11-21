@@ -14,6 +14,8 @@ enum MP4Boxes {
         /// Presentation offset the init's edit list applies, in seconds
         /// (empty edit minus the first media_time).
         var presentationOffset: Double
+        /// A picture track (handler `vide`), as opposed to sound.
+        var isVideo = false
     }
 
     private static func u32(_ d: Data, _ o: Int) -> UInt32 {
@@ -52,16 +54,19 @@ enum MP4Boxes {
                     let v = d[s + h]
                     movieTimescale = u32(d, s + h + (v == 1 ? 20 : 12))
                 } else if type == "trak" {
-                    var id: UInt32 = 0, ts: UInt32 = 0, empty = 0.0, mediaTime = 0.0
+                    var id: UInt32 = 0, ts: UInt32 = 0, empty = 0.0, mediaTime = 0.0, isVideo = false
                     boxes(d, s + h, e) { type, h, s, e in
                         if type == "tkhd" {
                             let v = d[s + h]
                             id = u32(d, s + h + (v == 1 ? 20 : 12))
                         } else if type == "mdia" {
-                            boxes(d, s + h, e) { type, h, s, _ in
+                            boxes(d, s + h, e) { type, h, s, e in
                                 if type == "mdhd" {
                                     let v = d[s + h]
                                     ts = u32(d, s + h + (v == 1 ? 20 : 12))
+                                } else if type == "hdlr", s + h + 12 <= e {
+                                    // FullBox header (4), pre_defined (4), then the handler type.
+                                    isVideo = d[(s + h + 8)..<(s + h + 12)].elementsEqual("vide".utf8)
                                 }
                             }
                         } else if type == "edts" {
@@ -88,7 +93,7 @@ enum MP4Boxes {
                             }
                         }
                     }
-                    if ts > 0 { result.append(Track(id: id, timescale: ts, presentationOffset: empty - mediaTime / Double(ts))) }
+                    if ts > 0 { result.append(Track(id: id, timescale: ts, presentationOffset: empty - mediaTime / Double(ts), isVideo: isVideo)) }
                 }
             }
         }
@@ -226,7 +231,7 @@ enum MP4Boxes {
     }
 
     /// Returns the segment with each track's `tfdt` moved by `offsets[trackID]` seconds and
-    /// `sidx` boxes neutralised.
+    /// `sidx` boxes neutralized.
     static func rebase(segment: Data, offsets: [UInt32: Double], timescales: [UInt32: UInt32]) -> Data {
         var d = segment
         boxes(d, 0, d.count) { type, h, s, e in

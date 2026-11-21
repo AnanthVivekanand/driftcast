@@ -121,7 +121,7 @@ No trial, no ads, no account and no tracking. Open source under the GPL, with FF
 - **Repackaging:** when only the container is wrong, such as HEVC in an MKV, the streams are copied into HLS with no quality loss and almost no processor time.
 - **Conversion on demand:** only the streams the device can't decode are converted, while you watch.
 - **Real seeking:** the whole playlist exists before conversion starts, so the device shows the true duration and its own remote can skip and scrub.
-- **Poster and details first:** a five-second title card with the poster, title, year, cast and ratings before the film starts. You can switch it off.
+- **Poster and details first:** a three-second title card with the poster, title, year, cast and ratings before the film starts. You can switch it off.
 - **Film and show details:** poster, plot, director, writers, cast, genres, age rating, running time and IMDb, Rotten Tomatoes and Metacritic scores, with no account needed.
 - **Picture subtitles become text:** Blu-ray PGS and DVD VobSub are read on your Mac, so an HEVC film with PGS subtitles plays without converting the video.
 - **A window that gets out of the way:** while casting, the video window shrinks to half size and keeps showing the film, silently, under a gray veil that says who you're connected to, with play, pause and the timeline.

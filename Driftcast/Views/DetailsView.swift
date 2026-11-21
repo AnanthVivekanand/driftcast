@@ -3,13 +3,19 @@ import SwiftUI
 /// The details panel beside the playlist: poster, plot, people and ratings for the selected
 /// (or playing) video, then what is in the file and how it would be sent to the current device.
 struct DetailsView: View {
+    /// The video a Details window is about (`DetailsWindow`). The panel beside the playlist
+    /// has none and follows the selection.
+    var pinned: MediaItem? = nil
     @EnvironmentObject private var player: PlaybackController
     @EnvironmentObject private var library: Library
     @AppStorage(Prefs.onlineDetails) private var onlineDetails = true
-    @AppStorage(Prefs.showDetails) private var showDetails = false
+    @AppStorage(Prefs.showDetails) private var showDetails = true
     @AppStorage(Prefs.hideSubtitleNotices) private var hideNotices = false
     /// Where the panel is scrolled, for the floating arrow.
     @State private var scroll = ScrollPosition()
+    /// Until when the panel keeps to its foot after "Show" on the captions line (see
+    /// `scrollToCaptions`).
+    @State private var captionsWantedUntil = Date.distantPast
     /// The language captions should be in (Settings > Subtitles); the crossed-out mark reports its absence.
     @AppStorage(Prefs.subtitleLanguage) private var captionLanguage = ""
     /// The OpenSubtitles sheet and the key steps, opened from the captions line or the section.
@@ -25,8 +31,16 @@ struct DetailsView: View {
     @State private var correcting = false
     @State private var correctionTitle = ""
     @State private var correctionYear = ""
+    /// The captions the file and its folder hold, found once when the file has been read (and
+    /// again when a subtitle file is attached). Worked out on every redraw, the folder was
+    /// listed from the disk each time the panel drew.
+    @State private var fileChoices: [SubtitleChoice] = []
 
-    private var item: MediaItem? { player.infoItem ?? player.nowPlaying }
+    private var item: MediaItem? { pinned ?? player.infoItem ?? player.nowPlaying }
+
+    /// Whether the panel still shows `item`. What a lookup brings back after another video was
+    /// picked belongs to the old one, and isn't written over the new one's details.
+    private func isShowing(_ item: MediaItem) -> Bool { !Task.isCancelled && self.item?.url == item.url }
 
     /// The library's copy of the panel's video, which carries subtitle files attached later.
     private func current(_ item: MediaItem) -> MediaItem {
@@ -34,12 +48,11 @@ struct DetailsView: View {
     }
 
     /// The captions the video has: the player's list while it plays (files added during
-    /// playback show up), else what the file and its neighbours hold.
+    /// playback show up), else what the file and its neighbors hold.
     private var captionChoices: [SubtitleChoice] {
         guard let item else { return [] }
         if player.nowPlaying?.url == item.url { return player.subtitleChoices }
-        guard let info else { return [] }
-        return SubtitleChoice.available(for: current(item), info: info)
+        return fileChoices
     }
     private var captionsProbing: Bool { info == nil && infoError == nil && player.nowPlaying?.url != item?.url }
     /// Nothing at all in the Settings language (a forced track in it counts as something).
@@ -50,8 +63,15 @@ struct DetailsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // A header with the control that folds the panel away (the toolbar button and
-            // View > Show Details do the same).
+            if pinned == nil { panelHeader }
+            content
+        }
+    }
+
+    /// The panel's header, with the control that folds the panel away (the toolbar button and
+    /// View > Show Details do the same). A Details window has its title bar instead.
+    private var panelHeader: some View {
+        VStack(spacing: 0) {
             HStack {
                 Text("Details").font(.headline)
                 Spacer()
@@ -71,7 +91,6 @@ struct DetailsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             Divider()
-            content
         }
     }
 
@@ -101,18 +120,21 @@ struct DetailsView: View {
                                         Text("Looking up details…").font(.callout).foregroundStyle(.secondary)
                                     }
                                 } else if !onlineDetails {
-                                    Text("Online details are off in Settings > General.")
-                                        .font(.callout).foregroundStyle(.secondary)
+                                    // Nothing said: the line pointing to Settings was taken out at
+                                    // the user's word, 2026-11-20.
+                                    EmptyView()
                                 } else {
                                     Text("No details were found for this title.")
                                         .font(.callout).foregroundStyle(.secondary)
                                 }
                                 correctionButton
                                 Divider()
-                                FileInfoSection(item: item, info: info, error: infoError)
+                                FileInfoSection(item: item, info: info, error: infoError, choices: captionChoices)
                                 actions(item)
                                 if !hideNotices {
-                                    SubtitleSection(item: current(item), choices: captionChoices, probing: captionsProbing,
+                                    SubtitleSection(item: current(item), choices: captionChoices,
+                                                    audio: info.flatMap { PlaybackController.preferredAudio($0) },
+                                                    probing: captionsProbing,
                                                     missingLanguage: captionsMissing ? captionLanguage : nil,
                                                     searching: $searching, keyHelp: $keyHelp)
                                         .id("captions")
@@ -121,15 +143,25 @@ struct DetailsView: View {
                             .padding(16)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id("top")
-                            Color.clear.frame(height: 1).id("bottom")
+                            // Room for the floating arrow under the last line, so at the foot
+                            // it doesn't sit on the captions section's "How to get one…".
+                            Color.clear.frame(height: scroll.overflows ? 34 : 1).id("bottom")
                         }
                         .background(ScrollObserver { scroll = $0 })
                 }
                 .overlay(alignment: .bottom) { scrollArrow(proxy) }
+                // The foot moved after "Show" was pressed: go with it.
+                .onChange(of: scroll.height) { _ in
+                    if Date() < captionsWantedUntil { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
             }
             .sheet(isPresented: $searching) { SubtitleSearchView(item: current(item)) }
             .task(id: item.url) { await load(item) }
             .onChange(of: onlineDetails) { on in if on { Task { await load(item) } } }
+            // A subtitle file attached to the video (downloaded, or chosen from the disk).
+            .onChange(of: current(item).extraSubtitles) { _ in
+                if let info { fileChoices = SubtitleChoice.available(for: current(item), info: info) }
+            }
         } else {
             EmptyStateView(title: "No Video Selected", systemImage: "info.circle",
                            message: "Select a video to see its poster, plot, ratings and what's in the file.")
@@ -194,17 +226,33 @@ struct DetailsView: View {
     private var captionsText: String {
         if captionsProbing { return "Checking closed captions…" }
         let summary = SubtitleChoice.languageSummary(captionChoices)
-        if captionChoices.isEmpty { return "No closed captions in this video" }
+        if captionChoices.isEmpty { return "No closed captions" }
         // Just the fact; the section below lists what the video does have.
         if captionsMissing { return "No \(Lang.name(captionLanguage) ?? captionLanguage) captions" }
         return "Closed Captions: \(summary)"
     }
 
+    /// To the foot of the panel, where the captions section is, and kept there for a few
+    /// seconds while the panel is still growing. Pressed soon after a video was picked, the
+    /// scroll was aimed at the foot as it was then; the details, the poster and an episode's
+    /// screenshot arrived after it and pushed the captions out of sight again (the user's
+    /// report, 2026-11-21: "no longer scrolls to the bottom"; seen stopping at 85%).
     private func scrollToCaptions(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeInOut(duration: 0.6)) { proxy.scrollTo("captions", anchor: .top) }
+        captionsWantedUntil = Date().addingTimeInterval(4)
+        withAnimation(.easeInOut(duration: 0.6)) { proxy.scrollTo("bottom", anchor: .bottom) }
     }
 
     @ViewBuilder private var artwork: some View {
+        // An episode's own picture first, above the show's poster, always (the user's call,
+        // 2026-11-20); it was further down, with the episode's air date and synopsis.
+        if let still {
+            Image(nsImage: still)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(radius: 4, y: 2)
+        }
         if let poster {
             Image(nsImage: poster)
                 .resizable()
@@ -222,9 +270,20 @@ struct DetailsView: View {
         }
     }
 
+    /// The panel's heading: the film or show as it was found online. With nothing found, the
+    /// name the person gave the video in the list, else the one its file gives.
+    private func headingTitle(_ item: MediaItem) -> String {
+        if let details {
+            if details.isEpisode, let show = details.showTitle { return show }
+            return details.title
+        }
+        if let given = item.givenName { return given }
+        return parsed?.shownTitle ?? item.parsedTitle.shownTitle
+    }
+
     private func heading(_ item: MediaItem) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(details?.isEpisode == true ? (details?.showTitle ?? details?.title ?? item.parsedTitle.title) : (details?.title ?? parsed?.title ?? item.parsedTitle.title))
+            Text(headingTitle(item))
                 .font(.title2.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -289,12 +348,6 @@ struct DetailsView: View {
 
     private func episodeBlock(_ details: MovieDetails) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let still {
-                Image(nsImage: still)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
             if let date = details.airDate { fact("Aired", date) }
             if let synopsis = details.episodeSynopsis, !synopsis.isEmpty {
                 Text(synopsis).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -310,6 +363,12 @@ struct DetailsView: View {
             Text(details.source == "Wikipedia" ? "Details from Wikipedia and Wikidata" : "Details from \(details.source)")
             if let link = details.link {
                 Link(details.link?.host?.contains("imdb") == true ? "IMDb page" : "Open page", destination: link)
+            }
+            if let item {
+                Button("Refresh") { Task { await load(item, refresh: true) } }
+                    .buttonStyle(.link)
+                    .disabled(looking)
+                    .help("Asks for this title's details again, in case they have changed or came back incomplete")
             }
         }
         .font(.caption)
@@ -367,38 +426,54 @@ struct DetailsView: View {
 
     // MARK: Loading
 
-    private func load(_ item: MediaItem) async {
-        details = nil; poster = nil; still = nil; info = nil; infoError = nil
-        parsed = await MetadataLookup.shared.title(for: item.url)
+    /// `refresh` is the Refresh button: the services are asked again, and what was shown
+    /// stays until they answer (and if they don't).
+    private func load(_ item: MediaItem, refresh: Bool = false) async {
+        if !refresh {
+            details = nil; poster = nil; still = nil; info = nil; infoError = nil; fileChoices = []
+            captionsWantedUntil = .distantPast   // another video: its panel starts at rest
+        }
+        let title = await MetadataLookup.shared.title(for: item.url)
+        guard isShowing(item) else { return }
+        parsed = title
         looking = onlineDetails
-        async let probe: Void = loadInfo(item)
-        if let cached = await MetadataLookup.shared.cached(for: item.url) {
+        async let probe: Void = refresh ? () : loadInfo(item)
+        if !refresh, let cached = await MetadataLookup.shared.cached(for: item.url) {
+            guard isShowing(item) else { return }
             details = cached
             await loadImages(cached, item: item)
         }
-        if details == nil, onlineDetails {
-            let found = await MetadataLookup.shared.details(for: item.url)
-            guard !Task.isCancelled else { return }
-            details = found
+        if onlineDetails, details == nil || refresh {
+            let found = await MetadataLookup.shared.details(for: item.url, refresh: refresh)
+            guard isShowing(item) else { return }
+            if found != nil || !refresh { details = found }
             if let found { await loadImages(found, item: item) }
         }
+        guard isShowing(item) else { return }
         looking = false
         if poster == nil, let data = await Thumbnailer.shared.poster(for: item.url, duration: info?.duration ?? 0) {
-            if !Task.isCancelled, poster == nil { poster = NSImage(data: data) }
+            if isShowing(item), poster == nil { poster = NSImage(data: data) }
         }
         await probe
     }
 
     private func loadInfo(_ item: MediaItem) async {
-        do { info = try await MediaProbe.shared.probe(item.url) } catch { infoError = error.localizedDescription }
+        do {
+            let probed = try await MediaProbe.shared.probe(item.url)
+            guard isShowing(item) else { return }
+            info = probed
+            fileChoices = SubtitleChoice.available(for: current(item), info: probed)
+        } catch {
+            if isShowing(item) { infoError = error.localizedDescription }
+        }
     }
 
     private func loadImages(_ details: MovieDetails, item: MediaItem) async {
         if let url = details.posterURL, let data = await MetadataLookup.shared.artwork(url), let image = NSImage(data: data) {
-            poster = image
+            if isShowing(item) { poster = image }
         }
         if let url = details.episodeImageURL, let data = await MetadataLookup.shared.artwork(url), let image = NSImage(data: data) {
-            still = image
+            if isShowing(item) { still = image }
         }
     }
 
@@ -421,9 +496,12 @@ struct DetailsView: View {
             found = await MetadataLookup.shared.details(for: corrected, refresh: true)
             if found != nil {
                 await MetadataLookup.shared.setTitle(corrected, for: item.url)
-                parsed = corrected
+                if isShowing(item) { parsed = corrected }
             }
         }
+        // Another video picked while the search ran: the title is corrected, and the panel
+        // is left to the video it now shows.
+        guard isShowing(item) else { return }
         details = found
         if let found { await loadImages(found, item: item) }
         looking = false
@@ -435,7 +513,28 @@ struct FileInfoSection: View {
     let item: MediaItem
     let info: MediaInfo?
     let error: String?
+    /// The video's captions, as the panel found them.
+    var choices: [SubtitleChoice] = []
     @EnvironmentObject private var player: PlaybackController
+    @EnvironmentObject private var library: Library
+
+    /// "1.42 GB", from the disk.
+    private var size: String? {
+        (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            .map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+    }
+
+    /// When the file arrived in its folder: "Nov 18, 2026 at 9:41 PM".
+    private var added: String? {
+        Library.dateAdded(item.url)?.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// How far it has been watched, as the list's bar shows it.
+    private var watchedText: String {
+        if library.watched.contains(item.url.path) { return "Finished" }
+        guard let p = library.progress[item.url.path] else { return "Not yet" }
+        return "\(formatTime(p.position)) of \(formatTime(p.duration)) (\(Int((p.fraction * 100).rounded()))%)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -451,12 +550,17 @@ struct FileInfoSection: View {
                 .lineLimit(2)
             if let info {
                 row("Duration", formatTime(info.duration))
-                row("Container", info.formatName)
+                row("Watched", watchedText)
+                if let size { row("Size", size) }
+                if let added { row("Added", added) }
+                row("Container", MediaInfo.containerName(formatName: info.formatName, file: item.url))
                 if let br = info.bitRate { row("Bit rate", String(format: "%.1f Mbps", Double(br) / 1_000_000)) }
                 if let v = info.video { row("Video", videoLine(v)) }
                 row(info.audio.count == 1 ? "Audio" : "Audio tracks", info.audio.isEmpty ? "None" : info.audio.map(\.label).joined(separator: "\n"))
                 // Subtitles have their own section at the foot of the panel.
-                Text("On \(player.outputName)").font(.callout.weight(.medium)).padding(.top, 4)
+                // The heading naming the device ("On This Mac") was taken out at the user's
+                // word, 2026-11-21; its line is kept blank, to set the notes apart from the rows.
+                Text(" ").font(.callout.weight(.medium)).padding(.top, 4).accessibilityHidden(true)
                 ForEach(planNotes(info), id: \.self) { note in
                     Text(note).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
@@ -493,8 +597,7 @@ struct FileInfoSection: View {
         case .cast(let d): profile = .chromecast(model: d.model, capabilities: d.capabilities, settings: settings)
         }
         let audio = PlaybackController.preferredAudio(info)
-        let subs = SubtitleChoice.available(for: item, info: info)
-        let sub = PlaybackController.preferredSubtitle(subs, audio: audio)
+        let sub = PlaybackController.preferredSubtitle(choices, audio: audio)
         return StreamPlanner.plan(info: info, file: item.url, profile: profile, settings: settings,
                                   audioIndex: audio?.index, subtitle: sub,
                                   subtitleIsText: sub.map { $0.isPicture && Prefs.bool(Prefs.ocrSubtitles) && PictureSubtitleOCR.supports($0, media: item.url) } ?? false,
@@ -510,12 +613,17 @@ struct SubtitleSection: View {
     /// The library's copy of the video, which carries subtitle files attached later.
     let item: MediaItem
     let choices: [SubtitleChoice]
+    /// The sound track the video would start with, which decides whether captions come on by
+    /// themselves ("only when the sound isn't in my language").
+    var audio: MediaInfo.Audio? = nil
     /// True while the file is still being read; a file that can't be read shows "None" rather than a spinner.
     let probing: Bool
     /// The Settings language when the video has no full captions in it.
     let missingLanguage: String?
     @Binding var searching: Bool
     @Binding var keyHelp: Bool
+    /// The small popover with only the key box ("Enter API Key…").
+    @State private var keyEntry = false
     @EnvironmentObject private var player: PlaybackController
     @EnvironmentObject private var library: Library
     @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
@@ -528,7 +636,10 @@ struct SubtitleSection: View {
     /// What is on now, or for a video that isn't playing, what would come on when it is.
     private var active: SubtitleChoice? {
         if isPlaying { return player.subtitle }
-        return PlaybackController.preferredSubtitle(choices, audio: player.nowPlaying?.url == item.url ? player.info?.audio.first : nil)
+        // By the sound track it would start with. With none given, every video's sound
+        // counted as foreign, and the panel said captions would come on for films in the
+        // Settings language, where they don't.
+        return PlaybackController.preferredSubtitle(choices, audio: audio)
     }
     private var shown: SubtitleChoice? { userPicked ? pick : active }
     private var hasKey: Bool {
@@ -549,7 +660,7 @@ struct SubtitleSection: View {
             }
             if !checking {
                 if choices.isEmpty {
-                    Text("None in this video. Find them online or add a subtitle file.")
+                    Text("Find them online or add a subtitle file.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -581,32 +692,54 @@ struct SubtitleSection: View {
             }
             // Ways to get captions, only when the video has none (the track menu offers them otherwise).
             if !checking, choices.isEmpty {
+                // Each button at its full width: offered the space left over, the first one was
+                // cut to "Find Subtitles Onli…" though the row had room (the user's report,
+                // 2026-11-21).
                 HStack(spacing: 8) {
                     Button("Find Subtitles Online…") { findOnline() }
                         .buttonStyle(.borderedProminent)
+                        .fixedSize()
                         .help("Searches OpenSubtitles for this video; pick a result and it downloads and comes on")
                     Button("Add Subtitle File…") { player.chooseSubtitleFile(for: current) }
-                    Spacer()
+                        .fixedSize()
+                    Spacer(minLength: 0)
                 }
                 .controlSize(.small)
                 if !hasKey {
-                    HStack(spacing: 4) {
-                        Text("Finding subtitles online needs a free OpenSubtitles key.")
-                        Button("How to get one…") { keyHelp = true }
-                            .buttonStyle(.link)
+                    // The sentence on a line of its own, never wrapped (made a little smaller
+                    // in a narrow panel instead); under it a button to type a key in and the
+                    // link to how to get one (the user's layout, 2026-11-21).
+                    Text("Finding subtitles online needs a free OpenSubtitles key.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    HStack(spacing: 10) {
+                        Button("Enter API Key…") { keyEntry = true }
+                            .controlSize(.small)
+                            .fixedSize()
+                            .help("Type or paste an OpenSubtitles API key you already have")
+                            .popover(isPresented: $keyEntry, arrowEdge: .bottom) {
+                                OpenSubtitlesKeyEntry { searchIfKeyed() }
+                            }
+                        // Drawn as a link, blue and underlined (the user's request, 2026-11-21):
+                        // in the gray of the line around it, it didn't read as something to click.
+                        Button { keyHelp = true } label: {
+                            Text("How to get one…")
+                                .underline()
+                                .foregroundStyle(Color(nsColor: .linkColor))
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .onHover { inside in if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+                        Spacer(minLength: 0)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
             }
         }
         .popover(isPresented: $keyHelp, arrowEdge: .bottom) {
             // Once a key is entered the search opens by itself.
-            OpenSubtitlesKeyHelp {
-                if OpenSubtitlesClient.hasKey {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { searching = true }
-                }
-            }
+            OpenSubtitlesKeyHelp { searchIfKeyed() }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -616,6 +749,13 @@ struct SubtitleSection: View {
         .onChange(of: choices) { now in
             // A track that is no longer there (the video changed) can't stay picked.
             if userPicked, let pick, !now.contains(pick) { userPicked = false }
+        }
+    }
+
+    /// After a key was entered: the search it was wanted for opens by itself.
+    private func searchIfKeyed() {
+        if OpenSubtitlesClient.hasKey {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { searching = true }
         }
     }
 
@@ -685,6 +825,34 @@ struct SubtitleSection: View {
 /// The steps to a free OpenSubtitles API key, with a box to paste it into. OpenSubtitles has
 /// no API for creating accounts, so the account itself is made on their website; the key
 /// works as soon as the consumer is saved (it is the account that needs confirming, by email).
+/// Just the box for a key someone already has: "Enter API Key…" under the captions section.
+/// The same setting as Settings > Subtitles and the last step of `OpenSubtitlesKeyHelp`.
+struct OpenSubtitlesKeyEntry: View {
+    /// Called after Done, so the caller can carry on (open the search).
+    var onDone: (() -> Void)? = nil
+    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("OpenSubtitles API Key").font(.headline)
+            TextField("Paste your key", text: $apiKey)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Text("Also in Settings > Subtitles.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { dismiss(); onDone?() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+}
+
 struct OpenSubtitlesKeyHelp: View {
     /// Called after Done, so the caller can carry on (for example, open the search).
     var onDone: (() -> Void)? = nil

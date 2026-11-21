@@ -16,6 +16,9 @@ struct LoadRequest {
     var details: MovieDetails?
     /// Seconds a Chromecast should sit on its poster screen before playing (0 = start at once).
     var posterHoldSeconds: Double = 0
+    /// Load without playing (a Chromecast's `autoplay` false, and no poster hold): a video that
+    /// was paused when the connection dropped is paused again when it is reloaded.
+    var startPaused = false
 }
 
 struct TargetStatus {
@@ -28,6 +31,10 @@ struct TargetStatus {
     var volume: Double?
     /// The device connection dropped and was re-established; the stream must be loaded again.
     var reconnected = false
+    /// The device's own mute (a TV muted with its remote, say); nil when it doesn't say.
+    var muted: Bool?
+    /// The device connection dropped and is being remade; `reconnected` or `error` follows.
+    var reconnecting = false
 }
 
 /// A device that plays a URL: AVPlayer (this Mac / AirPlay) or a Chromecast.
@@ -44,5 +51,11 @@ protocol PlaybackTarget: AnyObject {
     func setVolume(_ level: Double)
     /// Subtitles are drawn at `scale` times the normal size from now on (see `SubtitleSize`).
     func setSubtitleScale(_ scale: Double)
+    /// Mutes or unmutes the device itself (a Chromecast). The default does nothing.
+    func setMuted(_ muted: Bool)
     func disconnect()
+}
+
+extension PlaybackTarget {
+    func setMuted(_ muted: Bool) {}
 }

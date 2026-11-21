@@ -7,7 +7,7 @@ What's wired in, and the few things only you can do before a release.
 `Scripts/bundle-ffmpeg.sh` downloads the static `ffmpeg` and `ffprobe` builds for Apple silicon
 and Intel from <https://ffmpeg.martin-riedl.de>, checks them against the SHA-256 sums pinned in
 the script, merges each pair with `lipo` and puts the result in `Vendor/ffmpeg/` (about 310 MB,
-git-ignored) with FFmpeg's licence texts. The "Bundle ffmpeg" build phase copies that folder into
+git-ignored) with FFmpeg's license texts. The "Bundle ffmpeg" build phase copies that folder into
 `Contents/Resources/ffmpeg/` and re-signs it with the app's identity and the hardened runtime.
 The app looks there first, then Homebrew.
 
@@ -23,7 +23,7 @@ Build Release with `ARCHS="arm64 x86_64"` (Xcode's default for Release) so the a
 universal. The app skips any ffmpeg that lacks a slice for the running CPU rather than failing.
 The app needs macOS 13 or later regardless of CPU.
 
-Licensing: the bundled FFmpeg includes x264 and x265, so it's GPL. The licence texts are copied next
+Licensing: the bundled FFmpeg includes x264 and x265, so it's GPL. The license texts are copied next
 to the binaries. `LICENSE` (GPL v3) and `NOTICE.md` are copied into the app as `Resources/Licenses/` by the same
 build phase and open from the About window. The app runs ffmpeg as a separate executable (it is not linked in). A GPL ffmpeg is not
 allowed on the Mac App Store; an App Store build needs an LGPL-only build such as
@@ -49,9 +49,9 @@ The repository is `UpdateConfig.repository` (`leechsoftware/driftcast`). No acco
 involved; GitHub's public API allows 60 requests an hour per network address.
 
 **The version number is changed by hand only.** `MARKETING_VERSION` in the project is the
-version (1.1.2 at the time of writing). It stays as it is until the owner decides a new version
+version (1.1.3 at the time of writing). It stays as it is until the owner decides a new version
 is due; nothing bumps it automatically. The app offers an update only when a release's tag is
-a higher number than the version it is running, so a rebuilt 1.1.2 is never offered to a 1.1.2.
+a higher number than the version it is running, so a rebuilt 1.1.3 is never offered to a 1.1.3.
 
 Links for people always point at `releases/latest`, never at a particular version's page or
 file, so the website and README stay right when a new release comes out.
@@ -65,7 +65,7 @@ Per release:
    `Driftcast-<version>.dmg` (for people), `Driftcast-<version>.zip` (for Check for Updates,
    which can only install a zip) and `SHA256SUMS.txt`. `Releases/` is git-ignored.
 3. Create a GitHub release tagged `v<version>` and attach both files:
-   `gh release create v1.1.2 Releases/1.1.2/Driftcast-1.1.2.dmg Releases/1.1.2/Driftcast-1.1.2.zip --title "Driftcast 1.1.2" --notes-file notes.md`
+   `gh release create v1.1.3 Releases/1.1.3/Driftcast-1.1.3.dmg Releases/1.1.3/Driftcast-1.1.3.zip --title "Driftcast 1.1.3" --notes-file notes.md`
    (with Driftcast's own token in `GH_TOKEN`; see the note on accounts below). Drafts and
    pre-releases are not offered to the app.
 4. If the bundled ffmpeg changed, update its versions and library table in `NOTICE.md`. The
@@ -92,5 +92,5 @@ app inside it is what Gatekeeper checks when it is opened.
 
 ## 4. Releases
 
-Driftcast is free: there is no trial, time limit or licence key. Each version is a GitHub
+Driftcast is free: there is no trial, time limit or license key. Each version is a GitHub
 release with the DMG and the zip attached (section 2).

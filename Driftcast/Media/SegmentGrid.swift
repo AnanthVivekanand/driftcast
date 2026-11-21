@@ -50,8 +50,14 @@ struct SegmentGrid: Sendable {
 
     static func keyframes(_ times: [Double], duration: Double) -> SegmentGrid {
         var starts = times.sorted()
-        if starts.isEmpty || starts[0] > 0.5 { starts.insert(0, at: 0) }
-        starts = starts.filter { $0 < duration }
+        // A length of 0 (unknown) would leave no segment at all, and every caller reads the first.
+        if duration > 0 { starts = starts.filter { $0 < duration } }
+        // The first segment runs from the start of the film. A recording that begins part-way
+        // through a group of pictures has its first keyframe later; ffmpeg drops the frames before
+        // it, which can't be decoded, and its first file runs on to the second keyframe. A segment
+        // of its own before that keyframe would be one no file holds, so playing from the start
+        // waited two minutes for it and failed.
+        if starts.isEmpty { starts = [0] } else if starts[0] > 0.5 { starts[0] = 0 }
         return SegmentGrid(starts: starts, duration: duration)
     }
 }

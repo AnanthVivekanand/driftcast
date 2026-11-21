@@ -23,7 +23,7 @@ struct NoCaptionsIcon: View {
     }
 }
 
-/// The captions symbol in the accent colour, or the crossed-out one when `missing`.
+/// The captions symbol in the accent color, or the crossed-out one when `missing`.
 struct CaptionsIcon: View {
     var missing: Bool
     var filled = true

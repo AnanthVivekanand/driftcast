@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 
 setvbuf(stdout, nil, _IOLBF, 0)   // a crash shouldn't lose the lines before it
@@ -6,24 +7,8 @@ let mediaDir = URL(fileURLWithPath: CommandLine.arguments[1])
 let mkv = mediaDir.appendingPathComponent("Test.Movie.2024.1080p.mkv")
 let mp4 = mediaDir.appendingPathComponent("simple.mp4")
 
-func spin(_ seconds: Double, until done: () -> Bool = { false }) {
-    let end = Date().addingTimeInterval(seconds)
-    while Date() < end && !done() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-}
-func await_<T>(_ op: @escaping () async throws -> T) -> Result<T, Error> {
-    var r: Result<T, Error>?
-    Task { do { r = .success(try await op()) } catch { r = .failure(error) } }
-    spin(120) { r != nil }
-    return r!
-}
-func fetch(_ url: URL, range: String? = nil) -> (Int, Data, [AnyHashable: Any]) {
-    var req = URLRequest(url: url); if let range { req.setValue(range, forHTTPHeaderField: "Range") }
-    let r = await_ { try await URLSession.shared.data(for: req) }
-    let (d, resp) = try! r.get(); let h = resp as! HTTPURLResponse
-    return (h.statusCode, d, h.allHeaderFields)
-}
-var failures = 0
-func check(_ ok: Bool, _ what: String) { print(ok ? "PASS" : "FAIL", what); if !ok { failures += 1 } }
+// spin, await_, fetch, check and failures are in Tests/HarnessSupport/Helpers.swift, shared
+// with the area test files beside it.
 
 Prefs.register()
 if let dir = ProcessInfo.processInfo.environment["DRIFTCAST_FFMPEG_DIR"] { Prefs.defaults.set(dir, forKey: Prefs.ffmpegDirectory) }
@@ -181,7 +166,7 @@ check(subPlaylist.contains("subs-card.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:") && s
 let s1c = StreamSession(plan: applePlan, source: mkv, duration: info.duration, grid: copyGrid, cues: subCues)
 s1c.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 1080), atSegment: 2, hardware: true, format: TitleCard.Format(plan: applePlan))
 let midSubs = s1c.subtitlePlaylist()
-check(midSubs.contains("subs-2.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:5.000,\nsubs-card.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:") && midSubs.contains("subs-3.vtt") && s1c.subtitleSegment(3).contains("WEBVTT"),
+check(midSubs.contains("subs-2.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:\(String(format: "%.3f", TitleCard.seconds)),\nsubs-card.vtt\n#EXT-X-DISCONTINUITY\n#EXTINF:") && midSubs.contains("subs-3.vtt") && s1c.subtitleSegment(3).contains("WEBVTT"),
       "a mid-file card splits the subtitle segments at the same point: \(midSubs.split(separator: "\n").filter { $0.hasPrefix("subs") || $0.hasPrefix("#EXT-X-D") }.joined(separator: " "))")
 let (_, seg1, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("subs-1.vtt"))
 print(String(decoding: seg1, as: UTF8.self).split(separator: "\n").map { "  | " + $0 }.joined(separator: "\n"))
@@ -541,6 +526,46 @@ do {
           "corrected title: shown in the list and used for the lookup, and undone with the file name (\(before) -> \(shown) -> \(back))")
 }
 
+// A name typed in the list (Rename) is what the video is called, and nothing more
+do {
+    let file = URL(fileURLWithPath: "/tmp/harness-titles/The.Sopranos.S04E01.1080p.BluRay.x265-RARBG.mkv")
+    let item = MediaItem(url: file)
+    let before = item.displayName
+    var redraws = 0
+    let watching = lib.objectWillChange.sink { redraws += 1 }
+    lib.setName("  The Sopranos (last)\n", for: file)
+    let named = item.displayName
+    let tv = item.tvLines(lookedUp: true)
+    let lookedUp = try! await_ { await MetadataLookup.shared.title(for: file) }.get()
+    let saved = (try? Data(contentsOf: TitleOverrides.namesFile)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+    check(before == "The Sopranos S4 E1" && named == "The Sopranos (last)" && item.givenName == named && redraws == 1,
+          "a typed name: shown as typed, without the spaces around it, and the list redraws (\(before) -> \(named))")
+    check(tv.title == named && tv.subtitle == nil, "a typed name: the one line on the TV's panel (\(tv.title), \(tv.subtitle ?? "no second line"))")
+    check(lookedUp == MediaTitle(title: "The Sopranos", season: 4, episode: 1) && item.parsedTitle == lookedUp,
+          "a typed name: details are still looked up by what the file says (\(lookedUp.displayName))")
+    check(saved?[file.path] == named, "a typed name: saved beside the corrected titles")
+    lib.setName("The Sopranos (last)", for: file)
+    check(redraws == 1, "a typed name: the same name again changes nothing (\(redraws) redraws)")
+
+    // Under the typed name sits the title corrected by hand, which shows again when the name goes
+    TitleOverrides.set(MediaTitle(title: "Sopranos", season: 4, episode: 1), for: file)
+    let over = item.displayName
+    lib.setName("   ", for: file)
+    let cleared = item.displayName
+    let left = (try? Data(contentsOf: TitleOverrides.namesFile)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+    check(over == named && cleared == "Sopranos S4 E1" && item.givenName == nil && left?[file.path] == nil,
+          "a typed name: nothing typed gives the video back its own name (\(over) -> \(cleared))")
+    // Return in a text box that still holds the video's own name pins nothing to the file
+    lib.setName("Sopranos S4 E1", for: file)
+    let pinned = item.givenName
+    TitleOverrides.set(nil, for: file)
+    check(pinned == nil && item.displayName == before, "a typed name: the name the video has anyway isn't kept (\(item.displayName))")
+    check(TitleOverrides.cleaned("Heat\n(the long one)", insteadOf: "Heat (1995)") == "Heat (the long one)"
+          && TitleOverrides.cleaned("", insteadOf: "Heat (1995)") == nil,
+          "a typed name: kept on one line; empty is no name")
+    watching.cancel()
+}
+
 // Opening a video that is already listed must not list it twice
 do {
     let pl = lib.newPlaylist(named: "harness-dupes")
@@ -660,8 +685,67 @@ do {
     for name in ["Wire", "Wire S1", "Wire S2", "Wire S3"] { lib.playlists.filter { $0.name == name }.forEach { lib.deletePlaylist($0.id) } }
 }
 
+// Sort in the right-click menu, and which video the list shows after videos are added
+do {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("harness-sort-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let files = ["Zulu", "alpha", "Part 10", "Part 2", "Beta (1999)"].map { dir.appendingPathComponent($0 + ".mkv") }
+    files.forEach { FileManager.default.createFile(atPath: $0.path, contents: Data()) }
+    let pl = lib.newPlaylist(named: "harness-sort")
+    let was = lib.reveal
+    let added = lib.add(files, to: pl)
+    @MainActor func order() -> [String] { lib.playlists.first { $0.id == pl }?.items.map(\.displayName) ?? [] }
+    check(added.count == 5 && lib.reveal?.item == added.first?.id && lib.reveal != was,
+          "after an add, the first video added is the one to select and scroll to")
+    let shown = lib.reveal
+    lib.add([files[3]], to: pl)
+    check(lib.reveal?.item == added[3].id && lib.reveal != shown && order().count == 5,
+          "adding a video that is listed already points at its row, and doesn't list it twice")
+
+    lib.sort(pl, by: .name)
+    check(order() == ["Alpha", "Beta (1999)", "Part 2", "Part 10", "Zulu"], "sort by name: capitals don't matter and 2 comes before 10 \(order())")
+    lib.setName("Aardvark", for: files[0])
+    lib.sort(pl, by: .name)
+    check(order().first == "Aardvark", "sort by name: goes by the name a video was given \(order())")
+    lib.setName("", for: files[0])
+
+    // Newest first; the two with the same date keep their order, and a file with no date goes last.
+    let day = 86_400.0, t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    let dates: [String: Date] = ["Zulu.mkv": t0, "alpha.mkv": t0.addingTimeInterval(2 * day), "Part 2.mkv": t0.addingTimeInterval(day),
+                                 "Part 10.mkv": t0.addingTimeInterval(day)]
+    lib.sort(pl, by: .name)
+    lib.sort(pl, by: .dateAdded) { dates[$0.lastPathComponent] }
+    check(order() == ["Alpha", "Part 2", "Part 10", "Zulu", "Beta (1999)"], "sort by date added: newest first, undated last \(order())")
+    check(Library.dateAdded(files[0]) != nil && Library.dateAdded(dir.appendingPathComponent("gone.mkv")) == nil,
+          "date added: read from the disk; none for a file that isn't there")
+
+    lib.markWatched(files[1]); lib.markWatched(files[3])          // alpha and Part 2
+    lib.sort(pl, by: .unwatchedFirst)
+    check(order() == ["Part 10", "Zulu", "Beta (1999)", "Alpha", "Part 2"], "sort unwatched first: finished videos go after the rest, each group as it was \(order())")
+    lib.saveNow()
+    let kept = Library().playlists.first { $0.name == "harness-sort" }?.items.map(\.displayName) ?? []
+    check(kept == order(), "a sorted playlist is saved in its new order")
+    files.forEach { lib.clearProgress($0) }
+    lib.deletePlaylist(pl)
+    lib.saveNow()
+    try? FileManager.default.removeItem(at: dir)
+}
+
 // One copy of the app, two copies at once, and saves that fail.
 do {
+    // Reading the playlists writes nothing back. It used to schedule a save of the list just
+    // read, which half a second later could land on top of a newer one.
+    do {
+        lib.saveNow()
+        let store = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Driftcast/library.json")
+        func written() -> Date? { (try? FileManager.default.attributesOfItem(atPath: store.path))?[.modificationDate] as? Date }
+        let was = written()
+        let count = Library().playlists.count
+        Thread.sleep(forTimeInterval: 0.9)
+        check(was != nil && written() == was && count == lib.playlists.count, "reading the playlists leaves the file as it was")
+    }
+
     // Helpers sit inside the block, as the others in this file do.
     @MainActor func listed(_ library: Library, _ playlist: String) -> [String] {
         library.playlists.first { $0.name == playlist }?.items.map(\.baseName) ?? []
@@ -894,6 +978,33 @@ check(WatchProgress.finishPoint(duration: 7200, creditsStart: 6800) == 6790
       && WatchProgress.finishPoint(duration: 7200, creditsStart: 100) == 6912
       && WatchProgress.finishPoint(duration: 7200, creditsStart: 7300) == 6912,
       "finished: a credits chapter is used when it's in the second half")
+// The casting window's corner: where the video is, and how long until its credits
+do {
+    check(WatchProgress.creditsPoint(duration: 7200) == 6912 && WatchProgress.creditsPoint(duration: 7200, creditsStart: 6800) == 6800
+          && WatchProgress.creditsPoint(duration: 7200, creditsStart: 100) == 6912,
+          "credits: where the chapter says, else the last 4%")
+    let chapter = TimeLeft(position: 848.7, duration: 2300, creditsStart: 2182)
+    check(chapter.stamp == "14:08" && chapter.left == "22m, 14s left",
+          "time left: counted to the credits chapter (\(chapter.stamp) (\(chapter.left ?? "nil")))")
+    let film = TimeLeft(position: 3600, duration: 7200), start = TimeLeft(position: 0, duration: 7200)
+    check(film.stamp == "1:00:00" && film.left == "55m, 12s left" && start.stamp == "0:00" && start.left == "1h, 55m, 12s left",
+          "time left: without a chapter, to where the credits are taken to start (\(film.left ?? "nil"); \(start.left ?? "nil"))")
+    let nearly = TimeLeft(position: 6900.9, duration: 7200), credits = TimeLeft(position: 7000, duration: 7200)
+    let over = TimeLeft(position: 7300, duration: 7200)
+    check(nearly.left == "12s left" && credits.left == "3m, 20s to the end" && over.left == "0s to the end",
+          "time left: in the credits, what is left of the file (\(nearly.left ?? "nil"); \(credits.left ?? "nil"); \(over.left ?? "nil"))")
+    // The two numbers add up to the same moment at every second on the way there
+    let sums = Set(stride(from: 0.0, to: 2182, by: 0.37).map { p -> Int in
+        let t = TimeLeft(position: p, duration: 2300, creditsStart: 2182)
+        let parts = (t.left ?? "").replacingOccurrences(of: " left", with: "").replacingOccurrences(of: ",", with: "").split(separator: " ")
+        let left = parts.reduce(0) { $0 + (Int($1.dropLast()) ?? 0) * ($1.hasSuffix("h") ? 3600 : $1.hasSuffix("m") ? 60 : 1) }
+        return Int(p) + left
+    })
+    check(sums == [2182], "time left: the time and what is left tick together (\(sums.sorted()))")
+    let unknown = TimeLeft(position: 75, duration: 0)
+    check(unknown.stamp == "1:15" && unknown.left == nil && TimeLeft(position: .nan, duration: .infinity).stamp == "0:00",
+          "time left: only the time until the length is known")
+}
 check(TitleMatch.score(candidate: "Heat", year: 1995, wanted: heat) == 5 && TitleMatch.score(candidate: "Heat", year: 1986, wanted: heat) == 0
       && TitleMatch.score(candidate: "The Office", year: 2005, wanted: office) > 0 && TitleMatch.score(candidate: "Heat Wave", year: 1995, wanted: heat) == 3
       && TitleMatch.score(candidate: "Cheat", year: 1995, wanted: heat) == 0, "title matching: exact, year, prefix, no substring inside words")
@@ -1129,7 +1240,7 @@ do {
     let dv8 = fixture("{\"index\":0,\"codec_name\":\"hevc\",\"codec_type\":\"video\",\"pix_fmt\":\"yuv420p10le\",\"width\":3840,\"height\":2160,\"avg_frame_rate\":\"24/1\",\"color_transfer\":\"smpte2084\",\"side_data_list\":[{\"side_data_type\":\"DOVI configuration record\",\"dv_profile\":8,\"dv_bl_signal_compatibility_id\":1}]}")
     let dv5Args = args(StreamPlanner.plan(info: dv5, file: mp4, profile: apple, settings: hardwareOn, audioIndex: nil, subtitle: nil, options: noOptions))
     let dv8Args = args(StreamPlanner.plan(info: dv8, file: mp4, profile: apple, settings: hardwareOn, audioIndex: nil, subtitle: nil, options: noOptions))
-    check(dv5Args.contains("dvh1") && dv5Args.contains("unofficial"), "Dolby Vision profile 5 is labelled dvh1, with its dvcC box")
+    check(dv5Args.contains("dvh1") && dv5Args.contains("unofficial"), "Dolby Vision profile 5 is labeled dvh1, with its dvcC box")
     check(dv8Args.contains("hvc1") && !dv8Args.contains("dvh1"), "Dolby Vision profile 8 stays hvc1 for its HDR10 base layer")
     // A hand-built init segment with a dvh1 sample entry and a dvcC box (profile 5, level 6).
     func box(_ type: String, _ body: Data) -> Data {
@@ -1187,7 +1298,7 @@ do {
     check(OpenSubtitlesClient.Failure.http(403, "").isKeyRefused && OpenSubtitlesClient.Failure.http(401, "").isKeyRefused && OpenSubtitlesClient.Failure.noKey.isKeyRefused
           && !OpenSubtitlesClient.Failure.http(503, "").isKeyRefused && !OpenSubtitlesClient.Failure.badResponse.isKeyRefused, "only a refused key sends the search dialog back to the key box")
 
-    check(TitleCard.seconds == 5, "the poster card lasts five seconds")
+    check(TitleCard.seconds == 3, "the poster card lasts three seconds")
 
     // The self-updater: what stands between a download and replacing the app.
     let updateRoot = mediaDir.appendingPathComponent("update-test", isDirectory: true)
@@ -1310,6 +1421,14 @@ do {
     let leftovers = run(URL(fileURLWithPath: "/usr/bin/pgrep"), ["-f", pacing.id]).trimmingCharacters(in: .whitespacesAndNewlines)
     check(leftovers.isEmpty, "no frozen ffmpeg left behind after stopping (\(leftovers))")
 }
+
+// The checks kept in files of their own, one per area (Tests/HarnessSupport).
+print("-- subtitles"); subtitleTests()
+print("-- streaming"); streamingTests()
+print("-- library and names"); MainActor.assumeIsolated { libraryTests() }
+print("-- Chromecast"); castTests()
+print("-- playback and windows"); MainActor.assumeIsolated { playbackTests() }
+print("-- updater"); updaterTests()
 
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import SwiftUI
 
 /// Toolbar control choosing where video plays: this Mac (and AirPlay from there) or a Chromecast.
@@ -12,7 +13,8 @@ struct OutputPicker: View {
                 Button {
                     player.selectOutput(.local)
                 } label: {
-                    Label("This Mac", systemImage: player.output == .local ? "checkmark" : "laptopcomputer")
+                    // Not ticked while an AirPlay TV is showing the video.
+                    Label("This Mac", systemImage: player.output == .local && !player.isAirPlaying ? "checkmark" : "laptopcomputer")
                 }
                 Section("Chromecast") {
                     let screens = discovery.devices.filter { !$0.isAudioOnly }
@@ -167,6 +169,13 @@ struct VideoWindow: View {
 
     /// The bar under the picture (captions line, or the casting controls), as laid out.
     @State private var barHeight: CGFloat = 0
+    /// The size of the picture on show, which the window takes its shape from.
+    @StateObject private var picture = PictureSize()
+    /// The room the window had when the person began to resize it.
+    @State private var roomBeforeResize: NSSize?
+
+    /// The player whose picture is in the window: this Mac's, or while casting the silent copy.
+    private var shownPlayer: AVPlayer { castingName == nil ? player.localTarget.player : player.mirror.player }
 
     /// The captions bar is for a video that has captions to choose from. With none, a bar saying
     /// so only took room from the picture (the user's call, 2026-11-19); Find Subtitles Online…
@@ -186,7 +195,7 @@ struct VideoWindow: View {
                     // A silent copy of the video under the overlay, following the TV.
                     CastingPicture(mirror: player.mirror, deviceName: name, artwork: player.artwork)
                 } else {
-                    PlayerViewRepresentable(player: player.localTarget.player)
+                    LocalPicture(avPlayer: player.localTarget.player)
                 }
             }
             .frame(minWidth: pictureMinimum.width, minHeight: pictureMinimum.height)
@@ -208,9 +217,26 @@ struct VideoWindow: View {
                     .onChange(of: geometry.size.height) { barHeight = $0 }
             })
         }
-        .onAppear { fitWindow(casting: castingName != nil); keepBarVisible() }
-        .onChange(of: castingName != nil) { casting in fitWindow(casting: casting) }
-        .onChange(of: barHeight) { _ in keepBarVisible() }
+        .onAppear {
+            fitWindow(casting: castingName != nil)
+            keepBarVisible()
+            picture.watch(shownPlayer)
+            DispatchQueue.main.async { VideoWindowOrder.placeBeside(); VideoWindowOrder.raise() }
+            fitPicture()
+        }
+        .onChange(of: castingName != nil) { casting in
+            fitWindow(casting: casting)
+            picture.watch(shownPlayer)
+        }
+        .onChange(of: barHeight) { _ in keepBarVisible(); fitPicture() }
+        .onChange(of: picture.size) { _ in fitPicture() }
+        // A resize by hand ends in the picture's shape too.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { note in
+            if let window = note.object as? NSWindow, window === Self.window { roomBeforeResize = window.contentLayoutRect.size }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)) { note in
+            if (note.object as? NSWindow) === Self.window { fitPicture(resizedFrom: roomBeforeResize) }
+        }
         // A size macOS puts back after the window opens is checked like any other.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
             if (note.object as? NSWindow)?.identifier?.rawValue.hasPrefix("video") == true { keepBarVisible() }
@@ -248,6 +274,41 @@ extension VideoWindow {
         keepBarVisible()
     }
 
+    static var window: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("video") == true }
+    }
+
+    /// Shapes the window to the picture, so that no black bars stand beside it or above and
+    /// below it. The window's first size (960 by 540, title bar included) left a bar down each
+    /// side of a 16:9 video, and a film in another shape had bars whatever the size (the
+    /// user's report, 2026-11-20: "the video height doesn't fit in the window").
+    ///
+    /// The width stays and the height follows it; after a resize by the top or bottom edge
+    /// alone it is the height that stays. The top-left corner keeps its place. Not in full
+    /// screen, nor in a window zoomed to fill the screen, where bars are what is expected.
+    fileprivate func fitPicture(resizedFrom before: NSSize? = nil) {
+        DispatchQueue.main.async {
+            guard let window = Self.window, !window.styleMask.contains(.fullScreen), !window.inLiveResize,
+                  !window.isZoomed, picture.size.width > 0, picture.size.height > 0 else { return }
+            let shape = picture.size.width / picture.size.height
+            let room = window.contentLayoutRect.size
+            var width = room.width
+            if let before, abs(room.width - before.width) < 1, abs(room.height - before.height) >= 1 {
+                width = (room.height - barHeight) * shape
+            }
+            // No more than the screen has below and to the right of the window's corner, so
+            // the corner can stay where it is.
+            var most = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            if let screen = window.screen?.visibleFrame {
+                most = NSSize(width: screen.maxX - window.frame.minX,
+                              height: window.frame.maxY - screen.minY - Self.chrome(of: window))
+            }
+            let fitted = VideoWindowGeometry.room(forShape: shape, width: width, bar: barHeight, minimum: pictureMinimum, most: most)
+            guard abs(fitted.width - room.width) > 0.5 || abs(fitted.height - room.height) > 0.5 else { return }
+            window.setFrame(Self.frame(of: window, withRoom: fitted), display: true, animate: false)
+        }
+    }
+
     /// The height of the window that isn't room for the picture and the bar: its title bar.
     /// SwiftUI lets this window's content run under the title bar, so the window's own
     /// arithmetic (`frameRect(forContentRect:)`, `contentMinSize`) counts that strip as room.
@@ -280,18 +341,57 @@ extension VideoWindow {
     }
 }
 
+/// The size of the picture a player is showing, kept up to date: a video's shape is known only
+/// once its first frames are in, and the next video's may differ. The last size known stays
+/// while nothing is loaded.
+@MainActor
+final class PictureSize: ObservableObject {
+    @Published private(set) var size = CGSize.zero
+    private var watching: AnyCancellable?
+    private weak var player: AVPlayer?
+
+    func watch(_ player: AVPlayer) {
+        guard player !== self.player else { return }
+        self.player = player
+        watching = player.publisher(for: \.currentItem?.presentationSize)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] size in
+                MainActor.assumeIsolated {
+                    guard let self, let size, size.width > 0, size.height > 0, size != self.size else { return }
+                    self.size = size
+                }
+            }
+    }
+}
+
 /// Play and pause and the timeline, for a video that is playing on another device.
 private struct CastingControls: View {
     @EnvironmentObject private var player: PlaybackController
 
     var body: some View {
         HStack(spacing: 6) {
+            // Previous and Next beside Play, as in the playback bar (the user's report,
+            // 2026-11-20: the video window had nothing for the next or previous video).
+            Button { player.previous() } label: {
+                Image(systemName: "backward.end.fill").frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!player.hasPrevious)
+            .help("Previous video, or back to the start")
+            .accessibilityLabel("Previous video, or back to the start")
             Button { player.togglePause() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .frame(width: 18)
             }
             .buttonStyle(.borderless)
             .help(player.isPlaying ? "Pause" : "Play")
+            Button { player.next() } label: {
+                Image(systemName: "forward.end.fill").frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!player.hasNext)
+            .help("Next video")
+            .accessibilityLabel("Next video")
             TimelineRow(clock: player.clock)
         }
         .padding(.horizontal, 10)
@@ -301,64 +401,35 @@ private struct CastingControls: View {
 }
 
 /// The video window's picture while a TV plays the video: the mirror's silent copy, under a gray
-/// veil with who it is playing on. Until the copy has a picture, the poster stands in.
+/// veil with who it is playing on. Until the copy has a picture, the poster stands in. In the
+/// lower left corner, where the video is and how long is left of it.
 private struct CastingPicture: View {
+    @EnvironmentObject private var player: PlaybackController
     @ObservedObject var mirror: CastingMirror
     let deviceName: String
     let artwork: NSImage?
 
     var body: some View {
         ZStack {
-            PlayerViewRepresentable(player: mirror.player, showsControls: false)
-            CastingWatermark(deviceName: deviceName, artwork: artwork, overVideo: mirror.hasPicture)
+            PlayerViewRepresentable(player: mirror.player, showsControls: false, updatesNowPlaying: false)
+            CastingWatermark(deviceName: deviceName, artwork: artwork, overVideo: mirror.hasPicture,
+                             details: player.nowPlaying == nil ? nil : CastingDetails(plan: player.plan))
+            if player.nowPlaying != nil {
+                CastingTime(clock: player.clock)
+            }
         }
     }
 }
 
-/// Covers the picture while the video is on another device: over the video a gray veil, or
-/// before there is any picture the film's poster, dimmed, with who it is playing on across it.
-private struct CastingWatermark: View {
-    let deviceName: String
-    let artwork: NSImage?
-    var overVideo = false
+/// The time in the casting picture's corner. Apart from the picture and the watermark because
+/// it redraws at every position update and they need not.
+private struct CastingTime: View {
+    @EnvironmentObject private var player: PlaybackController
+    @ObservedObject var clock: PlaybackClock
 
     var body: some View {
-        GeometryReader { geometry in
-            let height = geometry.size.height
-            ZStack {
-                if overVideo {
-                    Color(white: 0.18).opacity(0.55)
-                } else {
-                    Color.black
-                }
-                if let artwork, !overVideo {
-                    Image(nsImage: artwork)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: height)
-                        .clipped()
-                        .opacity(0.28)
-                }
-                // The big grey streaming mark, with the words laid across it.
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: min(height * 0.62, geometry.size.width * 0.34)))
-                    .foregroundStyle(Color.gray.opacity(0.42))
-                VStack(spacing: height * 0.035) {
-                    Text("Connected to \(deviceName)")
-                        .font(.system(size: height * 0.1, weight: .bold))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.4)
-                    Text("Streaming video\u{2026}")
-                        .font(.system(size: height * 0.05))
-                        .opacity(0.8)
-                }
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.6), radius: 8, y: 2)
-                .padding(24)
-            }
-        }
-        .accessibilityElement(children: .combine)
+        CastingTimeLabel(time: TimeLeft(position: clock.position, duration: player.duration,
+                                        creditsStart: player.info?.creditsStart))
     }
 }
 
@@ -398,7 +469,7 @@ struct CaptionsFooter: View {
 
     private var notice: String {
         let languages = SubtitleChoice.languageSummary(player.subtitleChoices)
-        if player.subtitleChoices.isEmpty { return "No closed captions in this video" }
+        if player.subtitleChoices.isEmpty { return "No closed captions" }
         if missing { return "No \(Lang.name(language) ?? language) captions" }   // the menu lists what there is
         return "Closed Captions: \(languages)"
     }
@@ -422,6 +493,7 @@ struct SubtitleMenuItems: View {
         Divider()
         Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
         Button("Add Subtitle File…") { player.chooseSubtitleFile() }
+        if player.canReadSubtitlesAgain { Button("Read Subtitles Again") { player.readSubtitlesAgain() } }
         Divider()
         SubtitleSizeMenu()
     }
@@ -442,10 +514,140 @@ struct WindowConfigurator: NSViewRepresentable {
     }
 }
 
+/// The picture on this Mac, with Driftcast's own controls over its foot in place of macOS's.
+///
+/// macOS's controls gray out Fast Forward and Rewind for a stream made as it plays (they need
+/// a keyframe index, which such a stream doesn't have), and can't be given buttons of their
+/// own, so Next and Previous had nowhere to go (the user's reports and choice, 2026-11-20:
+/// Driftcast's own bar). It has what the playback bar has: Previous, back 10 seconds, Play,
+/// forward 10 seconds, Next, the timeline, and the speaker, with full screen at its end. Like
+/// the system's bar it comes up when the pointer moves over the picture and goes a few seconds
+/// after it stops, staying while the pointer is on it or the video is paused. A double-click on
+/// the picture goes full screen and back.
+private struct LocalPicture: View {
+    @EnvironmentObject private var player: PlaybackController
+    let avPlayer: AVPlayer
+    @State private var shown = true
+    @State private var onBar = false
+    /// Counts movements, so that only the last one's wait hides the bar.
+    @State private var moves = 0
+
+    private var keepShowing: Bool { onBar || !player.isPlaying }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            PlayerViewRepresentable(player: avPlayer, showsControls: false, updatesNowPlaying: true)
+            // Takes the double-click; the picture itself has nothing else to click now.
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { VideoControls.toggleFullScreen() }
+            if (shown || keepShowing), player.nowPlaying != nil {
+                VideoControls()
+                    .onHover { onBar = $0 }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
+            }
+        }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                if !shown { withAnimation(.easeOut(duration: 0.15)) { shown = true } }
+                moves += 1
+                let move = moves
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { hideAfterWait(move) }
+            case .ended:
+                if !keepShowing { withAnimation(.easeIn(duration: 0.3)) { shown = false } }
+            }
+        }
+        .onAppear {
+            let move = moves
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { hideAfterWait(move) }
+        }
+    }
+
+    private func hideAfterWait(_ move: Int) {
+        guard move == moves, !keepShowing else { return }
+        withAnimation(.easeIn(duration: 0.3)) { shown = false }
+        // In full screen the pointer goes as well, until it moves.
+        if VideoWindow.window?.styleMask.contains(.fullScreen) == true { NSCursor.setHiddenUntilMouseMoves(true) }
+    }
+}
+
+/// The bar over the foot of the picture on this Mac.
+private struct VideoControls: View {
+    @EnvironmentObject private var player: PlaybackController
+    @State private var fullScreen = VideoWindow.window?.styleMask.contains(.fullScreen) == true
+
+    static func toggleFullScreen() { VideoWindow.window?.toggleFullScreen(nil) }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            TimelineRow(clock: player.clock)
+            HStack(spacing: 0) {
+                Button { player.setMuted(!player.deviceMuted) } label: {
+                    Image(systemName: player.deviceMuted || player.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .frame(width: 28)
+                }
+                .help(player.deviceMuted ? "Unmute" : "Mute")
+                .accessibilityLabel(player.deviceMuted ? "Unmute" : "Mute")
+                Spacer(minLength: 8)
+                HStack(spacing: 20) {
+                    Button { player.previous() } label: { Image(systemName: "backward.end.fill") }
+                        .disabled(!player.hasPrevious)
+                        .help("Previous video, or back to the start")
+                        .accessibilityLabel("Previous video, or back to the start")
+                    Button { player.skip(-10) } label: { Image(systemName: "gobackward.10") }
+                        .help("Back 10 seconds")
+                        .accessibilityLabel("Back 10 seconds")
+                    Button { player.togglePause() } label: {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 22))
+                            .frame(width: 28)
+                    }
+                    .help(player.isPlaying ? "Pause" : "Play")
+                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                    Button { player.skip(10) } label: { Image(systemName: "goforward.10") }
+                        .help("Forward 10 seconds")
+                        .accessibilityLabel("Forward 10 seconds")
+                    Button { player.next() } label: { Image(systemName: "forward.end.fill") }
+                        .disabled(!player.hasNext)
+                        .help("Next video")
+                        .accessibilityLabel("Next video")
+                }
+                Spacer(minLength: 8)
+                Button { Self.toggleFullScreen() } label: {
+                    Image(systemName: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .frame(width: 28)
+                }
+                .help(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
+                .accessibilityLabel(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 15))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 560)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .environment(\.colorScheme, .dark)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { note in
+            if (note.object as? NSWindow) === VideoWindow.window { fullScreen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { note in
+            if (note.object as? NSWindow) === VideoWindow.window { fullScreen = false }
+        }
+    }
+}
+
 private struct PlayerViewRepresentable: NSViewRepresentable {
     let player: AVPlayer
-    /// Off for the casting copy: its controls would act on the copy, not on the TV.
+    /// Off for both pictures since 1.1.3: on this Mac Driftcast's own bar stands in for them,
+    /// and on the casting copy they would act on the copy, not on the TV.
     var showsControls = true
+    /// Off for the casting copy: it is not what is playing, and must not claim Now Playing or
+    /// the media keys.
+    var updatesNowPlaying = true
 
     func makeNSView(context: Context) -> AVPlayerView {
         let v = AVPlayerView()
@@ -453,8 +655,7 @@ private struct PlayerViewRepresentable: NSViewRepresentable {
         v.controlsStyle = showsControls ? .floating : .none
         v.showsFullScreenToggleButton = showsControls
         v.allowsPictureInPicturePlayback = showsControls
-        // The silent copy is not what is playing: it must not claim Now Playing or the media keys.
-        if !showsControls { v.updatesNowPlayingInfoCenter = false }
+        v.updatesNowPlayingInfoCenter = updatesNowPlaying
         return v
     }
 

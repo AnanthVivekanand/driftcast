@@ -14,6 +14,15 @@ actor MetadataLookup {
     private struct Entry: Codable {
         var details: MovieDetails?
         var fetched: Date
+        /// A request after the first one failed (a timeout, a busy service), so the details lack
+        /// what it would have brought (an episode's name, a film's people). Asked again after
+        /// `partialRetry`; kept for good, such a film never got its cast.
+        var partial: Bool?
+        /// The OMDb key the lookup was made with (`OMDbClient.fingerprint`, "" for none), and
+        /// whether OMDb answered. Details found without OMDb's answer are asked for again once
+        /// a key is set or changed, or a day later with the same key.
+        var omdbKey: String?
+        var omdbAnswered: Bool?
     }
 
     enum Fetched {
@@ -23,13 +32,19 @@ actor MetadataLookup {
     }
 
     private enum Outcome {
-        case found(MovieDetails)
+        case found(MovieDetails, partial: Bool)
         case none
         case failed
     }
 
+    /// What a lookup came to, and whether OMDb answered along the way.
+    private struct Lookup {
+        var outcome: Outcome
+        var omdbAnswered = false
+    }
+
     private var memory: [String: Entry] = [:]
-    private var inFlight: [String: Task<Outcome, Never>] = [:]
+    private var inFlight: [String: Task<Lookup, Never>] = [:]
     private var artworkMemory: [URL: Data] = [:]
     private var artworkOrder: [URL] = []
     private var nextAllowed: [String: Date] = [:]
@@ -38,6 +53,9 @@ actor MetadataLookup {
 
     /// A title that found nothing is asked about again after this long.
     private static let retryAfter: TimeInterval = 3 * 86_400
+    /// Details that came back without a part of them (`Entry.partial`) are asked for again
+    /// after this long.
+    private static let partialRetry: TimeInterval = 3600
 
     /// Smallest gap between requests to one service.
     private static let spacing: [String: TimeInterval] = [
@@ -69,7 +87,22 @@ actor MetadataLookup {
     }
 
     static func key(_ t: MediaTitle) -> String {
-        "\(TitleMatch.normalize(t.title))|\(t.year ?? 0)|\(t.season ?? 0)|\(t.episode ?? 0)"
+        "\(TitleMatch.normalize(t.title))|\(t.year ?? 0)|\(t.season ?? 0)|\(t.episode ?? 0)" + (t.country.map { "|\($0)" } ?? "")
+    }
+
+    /// Sound files: songs and recordings, not films.
+    static let audioExtensions: Set<String> = ["mp3", "m4a", "flac", "wav", "aac", "ogg", "opus"]
+
+    /// Whether a file is looked up online by itself, as its row appears, it is selected or it
+    /// starts to play. Not a sound file ("Yesterday.mp3" was given a film's poster and plot),
+    /// nor a video a camera, a phone or the screen recorder named ("IMG_2019.MOV",
+    /// "Screen Recording …"): their names say nothing a film database knows, and sending them
+    /// sends a person's own recordings out. Search by Title… still finds any of them, and its
+    /// title is looked up from then on.
+    static func looksUpByItself(_ url: URL) -> Bool {
+        if TitleOverrides.title(for: url) != nil { return true }
+        if audioExtensions.contains(url.pathExtension.lowercased()) { return false }
+        return !MediaTitle.isDeviceRecording(fileName: url.deletingPathExtension().lastPathComponent)
     }
 
     // MARK: Titles
@@ -86,41 +119,76 @@ actor MetadataLookup {
 
     // MARK: Details
 
-    /// Details already on disk or in memory, without going online.
+    /// Details already on disk or in memory, without going online. None for a file that isn't
+    /// looked up by itself (`looksUpByItself`), so a film found for "Birthday Party.mov" before
+    /// that rule doesn't stay on its row.
     func cached(for url: URL) -> MovieDetails? {
-        entry(for: Self.key(title(for: url)))?.details
+        guard Self.looksUpByItself(url) else { return nil }
+        return entry(for: Self.key(title(for: url)))?.details
     }
 
-    func details(for url: URL) async -> MovieDetails? {
-        await details(for: title(for: url))
+    /// Details for a file. `refresh` asks the services again even when an answer is cached
+    /// (a Refresh the person chose), and for a file that isn't looked up by itself too.
+    func details(for url: URL, refresh: Bool = false) async -> MovieDetails? {
+        guard refresh || Self.looksUpByItself(url) else { return nil }
+        return await details(for: title(for: url), refresh: refresh)
     }
 
     /// Details for a title, from the cache or the services. `refresh` asks again even when an
     /// answer is cached.
     func details(for title: MediaTitle, refresh: Bool = false) async -> MovieDetails? {
         let key = Self.key(title)
-        if !refresh, let e = entry(for: key) {
-            if e.details != nil || Date().timeIntervalSince(e.fetched) < Self.retryAfter { return e.details }
-        }
-        guard Self.isEnabled else { return nil }
+        let cached = entry(for: key)
+        if !refresh, let cached, !isStale(cached) { return cached.details }
+        guard Self.isEnabled else { return cached?.details }
         if let running = inFlight[key] {
-            if case .found(let d) = await running.value { return d }
-            return nil
+            if case .found(let d, _) = await running.value.outcome { return d }
+            return cached?.details
         }
         let task = Task { await self.lookup(title) }
         inFlight[key] = task
-        let outcome = await task.value
+        let result = await task.value
         inFlight[key] = nil
-        switch outcome {
-        case .found(let d):
-            store(Entry(details: d, fetched: Date()), for: key)
+        func made(_ details: MovieDetails?, partial: Bool) -> Entry {
+            Entry(details: details, fetched: Date(), partial: partial ? true : nil,
+                  omdbKey: OMDbClient.fingerprint(OMDbClient.activeKey), omdbAnswered: result.omdbAnswered)
+        }
+        switch result.outcome {
+        case .found(let d, let partial):
+            store(made(d, partial: partial), for: key)
             return d
         case .none:
-            store(Entry(details: nil, fetched: Date()), for: key)
+            // Asked again by itself (a key was set, a part was missing): what was found before
+            // stays, and with nothing more to be had it isn't asked for again. Asked again by
+            // the person, the answer stands.
+            if !refresh, let earlier = cached?.details {
+                store(made(earlier, partial: false), for: key)
+                return earlier
+            }
+            store(made(nil, partial: false), for: key)
             return nil
         case .failed:
-            return nil
+            return cached?.details
         }
+    }
+
+    /// Whether a cached answer is to be asked for again: nothing was found a while ago, a part
+    /// was missing an hour ago, or OMDb's answer is wanted (`wantsOMDb`).
+    private func isStale(_ e: Entry) -> Bool {
+        let age = Date().timeIntervalSince(e.fetched)
+        if e.details == nil, age >= Self.retryAfter { return true }
+        if e.partial == true, age >= Self.partialRetry { return true }
+        return Self.wantsOMDb(e, age: age)
+    }
+
+    /// An OMDb key is set, and the answer was had without OMDb's: with no key or another one
+    /// (entered in Settings since), or a day or more ago with this one while OMDb wasn't
+    /// answering (the key turned down, the day's requests used up). Without this, a key
+    /// entered later changed nothing for the videos already looked up.
+    private static func wantsOMDb(_ e: Entry, age: TimeInterval) -> Bool {
+        let key = OMDbClient.activeKey
+        guard !key.isEmpty, e.omdbAnswered != true else { return false }
+        return e.omdbKey != OMDbClient.fingerprint(key) || age >= 86_400
     }
 
     private func entry(for key: String) -> Entry? {
@@ -137,74 +205,117 @@ actor MetadataLookup {
         if let data = try? JSONEncoder().encode(entry) { try? data.write(to: file, options: .atomic) }
     }
 
-    private func lookup(_ t: MediaTitle) async -> Outcome {
+    private func lookup(_ t: MediaTitle) async -> Lookup {
         var failed = false
+        var omdbAnswered = false
         if !OMDbClient.activeKey.isEmpty {
             switch await omdb(t) {
-            case .found(let d): return .found(d)
+            case .found(let d, let partial): return Lookup(outcome: .found(d, partial: partial), omdbAnswered: true)
             case .failed: failed = true
-            case .none: break
+            case .none: omdbAnswered = true
             }
         }
+        return Lookup(outcome: await lookupWithoutKey(t, failed: failed), omdbAnswered: omdbAnswered)
+    }
+
+    /// Wikipedia, Wikidata and TVmaze, which need no key. `failed`: OMDb was asked and didn't answer.
+    private func lookupWithoutKey(_ t: MediaTitle, failed: Bool) async -> Outcome {
+        var failed = failed
         if t.isEpisode {
             switch await tvmaze(t) {
-            case .found(let d): return .found(d)
+            case .found(let d, let partial): return .found(d, partial: partial)
             case .failed: return .failed
             case .none: return failed ? .failed : .none
             }
         }
-        var fromWikipedia: MovieDetails?
+        var fromWikipedia: (details: MovieDetails, partial: Bool)?
         switch await wikipedia(t) {
-        case .found(let d):
+        case .found(let d, let partial):
             // A show found on Wikipedia is better served by TVmaze (rating, episodes), with
             // Wikipedia's people kept if TVmaze has none.
-            if d.showTitle == nil { return .found(d) }
-            fromWikipedia = d
+            if d.showTitle == nil { return .found(d, partial: partial) }
+            fromWikipedia = (d, partial)
         case .failed: failed = true
         case .none: break
         }
         // A title without episode markers can still be a show ("Planet Earth").
         switch await tvmaze(t) {
-        case .found(var d):
-            if let w = fromWikipedia {
+        case .found(var d, let partial):
+            if let w = fromWikipedia?.details {
                 if d.cast.isEmpty { d.cast = w.cast }
                 if d.directors.isEmpty { d.directors = w.directors }
                 if d.writers.isEmpty { d.writers = w.writers }
             }
-            return .found(d)
-        case .failed: return fromWikipedia.map { .found($0) } ?? .failed
-        case .none: return fromWikipedia.map { .found($0) } ?? (failed ? .failed : .none)
+            return .found(d, partial: partial || fromWikipedia?.partial == true)
+        case .failed:
+            // What Wikipedia found stands for now, and TVmaze is asked again later.
+            return fromWikipedia.map { .found($0.details, partial: true) } ?? .failed
+        case .none:
+            return fromWikipedia.map { .found($0.details, partial: $0.partial) } ?? (failed ? .failed : .none)
         }
     }
 
     // MARK: Services
 
     private func omdb(_ t: MediaTitle) async -> Outcome {
+        let outcome = await omdb(t, exactOnly: false)
+        // A show whose name does end in a year ("Space 1999") is asked for as written too.
+        if case .none = outcome, let written = t.asWritten { return await omdb(written, exactOnly: true) }
+        return outcome
+    }
+
+    private func omdb(_ t: MediaTitle, exactOnly: Bool) async -> Outcome {
         let key = OMDbClient.activeKey
         if t.isEpisode {
-            guard let showURL = OMDbClient.url(title: t.title, year: nil, type: "series", key: key) else { return .none }
-            guard case .data(let showData) = await fetch(showURL) else { return .failed }
-            guard var show = OMDbClient.parse(showData, wanted: t) else { return .none }
-            if let episodeURL = OMDbClient.episodeURL(title: show.title, season: t.season ?? 1, episode: t.episode ?? 1, key: key),
-               case .data(let episodeData) = await fetch(episodeURL) {
-                show = OMDbClient.parseEpisode(episodeData, into: show)
+            // The year the file gives the show ("Doctor Who 2005") picks it among shows of one name.
+            guard let showURL = OMDbClient.url(title: t.title, year: t.year, type: "series", key: key) else { return .none }
+            let showData: Data
+            switch await omdbFetch(showURL) {
+            case .data(let data): showData = data
+            case .notFound: return .none
+            case .failed: return .failed
+            }
+            guard var show = OMDbClient.parse(showData, wanted: t, exactOnly: exactOnly) else { return .none }
+            var partial = false
+            if let episodeURL = OMDbClient.episodeURL(title: show.title, season: t.season ?? 1, episode: t.episode ?? 1, key: key) {
+                switch await omdbFetch(episodeURL) {
+                case .data(let episodeData): show = OMDbClient.parseEpisode(episodeData, into: show)
+                case .notFound: break
+                case .failed: partial = true
+                }
             }
             show.season = show.season ?? t.season
             show.episode = show.episode ?? t.episode
-            return .found(show)
+            return .found(show, partial: partial)
         }
         guard let url = OMDbClient.url(title: t.title, year: t.year, type: "movie", key: key) else { return .none }
-        switch await fetch(url) {
+        switch await omdbFetch(url) {
         case .data(let data):
-            if let d = OMDbClient.parse(data, wanted: t) { return .found(d) }
+            if let d = OMDbClient.parse(data, wanted: t, exactOnly: exactOnly) { return .found(d, partial: false) }
             return .none
         case .notFound: return .none
         case .failed: return .failed
         }
     }
 
+    /// An OMDb request. OMDb says in its answer what went wrong ("Invalid API key!", "Request
+    /// limit reached!"); that is kept for Settings to show (`OMDbClient.problem`), and cleared
+    /// by the next answer. "Not found" is an answer. A request that never got through says
+    /// nothing about the key and changes nothing.
+    private func omdbFetch(_ url: URL) async -> Fetched {
+        guard let (status, data) = await fetchResponse(url) else { return .failed }
+        let said = OMDbClient.error(in: data)
+        if (200...299).contains(status), said.map(OMDbClient.isNotFound) ?? true {
+            OMDbClient.noteProblem(nil)
+            return .data(data)
+        }
+        OMDbClient.noteProblem(OMDbClient.problem(status: status, said: said))
+        return .failed
+    }
+
     /// Wikipedia's article for the film (poster, plot), then its Wikidata entry (people,
-    /// genres, running time, IMDb link). Four small requests, all cached afterwards.
+    /// genres, running time, IMDb link). Four small requests, all cached afterwards. When one
+    /// of the last two fails, what the first two found is a partial answer.
     private func wikipedia(_ t: MediaTitle) async -> Outcome {
         guard let searchURL = Wikipedia.searchURL(t) else { return .none }
         let page: String
@@ -226,40 +337,80 @@ actor MetadataLookup {
             details = parsed.details
             qid = parsed.qid
         }
-        if let qid, let entityURL = Wikidata.entityURL(qid), case .data(let entityData) = await fetch(entityURL) {
-            let claims = Wikidata.parseEntity(entityData, qid: qid)
-            var labels: [String: String] = [:]
-            let ids = claims.labelIDs
-            if !ids.isEmpty, let labelsURL = Wikidata.labelsURL(ids), case .data(let labelData) = await fetch(labelsURL) {
-                labels = Wikidata.parseLabels(labelData)
+        var partial = false
+        if let qid, let entityURL = Wikidata.entityURL(qid) {
+            switch await fetch(entityURL) {
+            case .data(let entityData):
+                let claims = Wikidata.parseEntity(entityData, qid: qid)
+                var labels: [String: String] = [:]
+                let ids = claims.labelIDs
+                if !ids.isEmpty, let labelsURL = Wikidata.labelsURL(ids) {
+                    switch await fetch(labelsURL) {
+                    case .data(let labelData): labels = Wikidata.parseLabels(labelData)
+                    case .notFound: break
+                    case .failed: partial = true
+                    }
+                }
+                details = Wikidata.apply(claims, labels: labels, to: details)
+            case .notFound: break
+            case .failed: partial = true
             }
-            details = Wikidata.apply(claims, labels: labels, to: details)
         }
-        return .found(details)
+        return .found(details, partial: partial)
     }
 
+    private enum ShowFound {
+        case show(MovieDetails, id: Int)
+        case none
+        case failed
+    }
+
+    /// The show on TVmaze, then the episode. A show whose name ends in a year ("Space 1999")
+    /// that isn't found as "Space" first shown in 1999 is looked for by its whole name.
     private func tvmaze(_ t: MediaTitle) async -> Outcome {
-        guard let url = TVmaze.showURL(t.title) else { return .none }
-        switch await fetch(url) {
+        var found = await tvmazeShow(t, exactOnly: false)
+        if case .none = found, let written = t.asWritten { found = await tvmazeShow(written, exactOnly: true) }
+        switch found {
         case .failed: return .failed
-        case .notFound: return .none
-        case .data(let data):
-            guard let (show, id) = TVmaze.parseShow(data, wanted: t) else { return .none }
+        case .none: return .none
+        case .show(let show, let id):
             guard let episode = t.episode, let episodeURL = TVmaze.episodeURL(showID: id, season: t.season ?? 1, episode: episode) else {
-                return .found(show)
+                return .found(show, partial: false)
             }
-            if case .data(let episodeData) = await fetch(episodeURL) {
-                return .found(TVmaze.parseEpisode(episodeData, into: show))
+            let partial: Bool
+            switch await fetch(episodeURL) {
+            case .data(let episodeData): return .found(TVmaze.parseEpisode(episodeData, into: show), partial: false)
+            case .notFound: partial = false      // TVmaze has no such episode
+            case .failed: partial = true
             }
             var withNumbers = show
             withNumbers.season = t.season
             withNumbers.episode = episode
-            return .found(withNumbers)
+            return .found(withNumbers, partial: partial)
+        }
+    }
+
+    private func tvmazeShow(_ t: MediaTitle, exactOnly: Bool) async -> ShowFound {
+        guard let url = TVmaze.searchURL(t.title) else { return .none }
+        switch await fetch(url) {
+        case .failed: return .failed
+        case .notFound: return .none
+        case .data(let data):
+            guard let (show, id) = TVmaze.pickShow(data, wanted: t, exactOnly: exactOnly) else { return .none }
+            return .show(show, id: id)
         }
     }
 
     /// One request, paced per service. 404 means "nothing there", any other trouble "failed".
     private func fetch(_ url: URL, accept: String = "application/json") async -> Fetched {
+        guard let (status, data) = await fetchResponse(url, accept: accept) else { return .failed }
+        if status == 404 { return .notFound }
+        guard (200...299).contains(status) else { return .failed }
+        return .data(data)
+    }
+
+    /// One request, paced per service: the status and the body, or nil when no answer came.
+    private func fetchResponse(_ url: URL, accept: String = "application/json") async -> (Int, Data)? {
         let host = url.host ?? ""
         let gap = Self.spacing[host] ?? 0.5
         let now = Date()
@@ -272,10 +423,8 @@ actor MetadataLookup {
         request.setValue("Driftcast/\(AppVersion.installed) (macOS)", forHTTPHeaderField: "User-Agent")
         request.setValue(accept, forHTTPHeaderField: "Accept")
         guard let (data, response) = try? await Self.session.data(for: request),
-              let http = response as? HTTPURLResponse else { return .failed }
-        if http.statusCode == 404 { return .notFound }
-        guard (200...299).contains(http.statusCode) else { return .failed }
-        return .data(data)
+              let http = response as? HTTPURLResponse else { return nil }
+        return (http.statusCode, data)
     }
 
     // MARK: Artwork
@@ -314,7 +463,7 @@ actor MetadataLookup {
     }
 }
 
-/// Runs work that must not be cancelled (its result is cached for later) but that a caller
+/// Runs work that must not be canceled (its result is cached for later) but that a caller
 /// will only wait so long for.
 enum Deadline {
     static func first<T: Sendable>(within seconds: Double, _ operation: @escaping @Sendable () async -> T?) async -> T? {
@@ -358,13 +507,17 @@ enum TitleMatch {
 
     /// 0 for no match; higher is better. A year that is known on both sides must agree
     /// (give or take one, for festival releases).
+    ///
+    /// Names are compared by whole words: "In the Heat of the Night" holds "Heat", but "Cheat
+    /// Sheet" doesn't, nor "Mother Father Son" "Her".
     static func score(candidate: String, year: Int?, wanted: MediaTitle) -> Int {
         let a = normalize(candidate), b = normalize(wanted.title)
         guard !a.isEmpty, !b.isEmpty else { return 0 }
+        let aw = a.split(separator: " "), bw = b.split(separator: " ")
         var score: Int
         if a == b {
             score = 3
-        } else if a.hasPrefix(b + " ") || b.hasPrefix(a + " ") || a.contains(" " + b) || a.contains(b + " ") {
+        } else if aw.starts(with: bw) || bw.starts(with: aw) || contains(aw, bw) {
             score = 1
         } else {
             return 0
@@ -373,6 +526,12 @@ enum TitleMatch {
             if abs(y - w) <= 1 { score += 2 } else { return 0 }
         }
         return score
+    }
+
+    /// Whether `words` holds `run`, word for word and in a row.
+    private static func contains(_ words: [Substring], _ run: [Substring]) -> Bool {
+        guard !run.isEmpty, run.count <= words.count else { return false }
+        return (0...(words.count - run.count)).contains { words[$0..<($0 + run.count)].elementsEqual(run) }
     }
 }
 
@@ -527,7 +686,9 @@ enum Wikidata {
             guard let v = value(statement) as? [String: Any], let amount = v["amount"] as? String else { return nil }
             let unit = v["unit"] as? String ?? ""
             guard let n = Double(amount) else { return nil }
-            return unit.hasSuffix("Q7727") ? Int(n.rounded()) : (unit.hasSuffix("Q11574") ? Int((n / 60).rounded()) : nil)
+            // Int(exactly:): a value too large for an Int (a vandalized entry) is nil, where
+            // Int() stopped the app, at every launch while that film's row was on screen.
+            return unit.hasSuffix("Q7727") ? Int(exactly: n.rounded()) : (unit.hasSuffix("Q11574") ? Int(exactly: (n / 60).rounded()) : nil)
         }.first
         c.year = statements("P577").compactMap { statement -> Int? in
             guard let v = value(statement) as? [String: Any], let time = v["time"] as? String else { return nil }
@@ -588,8 +749,11 @@ enum Wikidata {
 /// TVmaze: shows and episodes with poster, rating, network, genres and synopses. No key is
 /// needed; TVmaze asks only for a link back, which the details view shows.
 enum TVmaze {
-    static func showURL(_ name: String) -> URL? {
-        var components = URLComponents(string: "https://api.tvmaze.com/singlesearch/shows")
+    /// The search that answers with every show that fits, best first. Its single-answer form
+    /// gave one show for a name: there are three called "Doctor Who", and only the year a file
+    /// names tells which.
+    static func searchURL(_ name: String) -> URL? {
+        var components = URLComponents(string: "https://api.tvmaze.com/search/shows")
         components?.queryItems = [URLQueryItem(name: "q", value: name)]
         return components?.url
     }
@@ -598,13 +762,57 @@ enum TVmaze {
         URL(string: "https://api.tvmaze.com/shows/\(showID)/episodebynumber?season=\(season)&number=\(episode)")
     }
 
+    /// One show, as TVmaze describes it, when it is the one wanted.
     static func parseShow(_ data: Data, wanted: MediaTitle) -> (MovieDetails, Int)? {
-        guard let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let id = r["id"] as? Int, let name = r["name"] as? String else { return nil }
-        let year = (r["premiered"] as? String).flatMap { Int($0.prefix(4)) }
-        // A show's episodes carry no year in their names, so the premiere year is not held
-        // against them.
-        guard TitleMatch.score(candidate: name, year: wanted.isEpisode ? nil : year, wanted: wanted) > 0 else { return nil }
+        guard let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return pick([r], wanted: wanted, exactOnly: false)
+    }
+
+    /// The show wanted among a search's answers (`searchURL`), best first. With a year or a
+    /// country to go by, the name that fits best and, among shows of one name, the one first
+    /// shown in that year (a year more or less is allowed) or made in that country; the
+    /// service's order settles a tie. Without, the first answer when it fits. With
+    /// `exactOnly`, only the very name counts.
+    static func pickShow(_ data: Data, wanted: MediaTitle, exactOnly: Bool = false) -> (MovieDetails, Int)? {
+        guard let results = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        return pick(results.compactMap { $0["show"] as? [String: Any] }, wanted: wanted, exactOnly: exactOnly)
+    }
+
+    /// TVmaze's code for the countries `MediaTitle.country` reads from file names.
+    private static let countryCodes = ["US": "US", "UK": "GB", "AU": "AU"]
+
+    private static func pick(_ shows: [[String: Any]], wanted: MediaTitle, exactOnly: Bool) -> (MovieDetails, Int)? {
+        // With no year or country to choose by, the first answer or none, as before.
+        let choosing = exactOnly || wanted.year != nil || wanted.country != nil
+        var best: (show: [String: Any], score: Int)?
+        for show in choosing ? shows : Array(shows.prefix(1)) {
+            guard let name = show["name"] as? String else { continue }
+            // An episode's name has a year only when the file gave its show one (the year it
+            // was first shown); otherwise the premiere year is held against nothing.
+            var score = TitleMatch.score(candidate: name, year: premiered(show), wanted: wanted)
+            if exactOnly, score < 3 { continue }
+            if let wantedCountry = wanted.country.flatMap({ countryCodes[$0] }), let country = country(of: show) {
+                guard country == wantedCountry else { continue }
+                score += 1
+            }
+            if score > (best?.score ?? 0) { best = (show, score) }
+        }
+        return best.flatMap { details(of: $0.show) }
+    }
+
+    private static func premiered(_ show: [String: Any]) -> Int? {
+        (show["premiered"] as? String).flatMap { Int($0.prefix(4)) }
+    }
+
+    /// Where the show was made, as its channel's country says: "US", "GB".
+    private static func country(of show: [String: Any]) -> String? {
+        let channel = (show["network"] as? [String: Any]) ?? (show["webChannel"] as? [String: Any])
+        return (channel?["country"] as? [String: Any])?["code"] as? String
+    }
+
+    private static func details(of r: [String: Any]) -> (MovieDetails, Int)? {
+        guard let id = r["id"] as? Int, let name = r["name"] as? String else { return nil }
+        let year = premiered(r)
         var d = MovieDetails(title: name, source: "TVmaze")
         d.showTitle = name
         d.year = year
@@ -661,6 +869,69 @@ enum OMDbClient {
         return own.isEmpty ? builtInKey : own
     }
 
+    /// A short fingerprint of a key, to tell keys apart without keeping them twice. "" for none.
+    static func fingerprint(_ key: String) -> String {
+        key.isEmpty ? "" : String(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined().prefix(12))
+    }
+
+    // MARK: What went wrong
+
+    /// The UserDefaults key under which the last thing OMDb said went wrong is kept. It
+    /// changes whenever that does, so a view can watch it with @AppStorage and then read `problem`.
+    static let problemKey = "omdbProblem"
+    private static let problemForKey = "omdbProblemKey"
+    private static let problemDateKey = "omdbProblemDate"
+
+    /// What went wrong the last time OMDb was asked with the key now in Settings: "OMDb
+    /// didn't accept the key.", "The key's requests for today are used up." Nil when OMDb last
+    /// answered, or hasn't been asked with this key. For Settings, under the key.
+    static var problem: String? {
+        let key = activeKey
+        guard !key.isEmpty, let text = Prefs.defaults.string(forKey: problemKey), !text.isEmpty,
+              Prefs.defaults.string(forKey: problemForKey) == fingerprint(key) else { return nil }
+        return text
+    }
+
+    /// When `problem` was last seen.
+    static var problemDate: Date? {
+        problem == nil ? nil : Prefs.defaults.object(forKey: problemDateKey) as? Date
+    }
+
+    static func noteProblem(_ text: String?) {
+        let defaults = Prefs.defaults
+        guard let text else {
+            if defaults.object(forKey: problemKey) != nil {
+                defaults.removeObject(forKey: problemKey)
+                defaults.removeObject(forKey: problemForKey)
+                defaults.removeObject(forKey: problemDateKey)
+            }
+            return
+        }
+        defaults.set(fingerprint(activeKey), forKey: problemForKey)
+        defaults.set(Date(), forKey: problemDateKey)
+        defaults.set(text, forKey: problemKey)
+    }
+
+    /// The "Error" of an answer with "Response": "False".
+    static func error(in data: Data) -> String? {
+        guard let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              (r["Response"] as? String) == "False" else { return nil }
+        return (r["Error"] as? String) ?? "No reason given."
+    }
+
+    /// "Movie not found!", "Series or episode not found!": an answer, not a failure.
+    static func isNotFound(_ error: String) -> Bool {
+        error.range(of: "not found", options: .caseInsensitive) != nil
+    }
+
+    /// What a failed answer means, said plainly.
+    static func problem(status: Int, said: String?) -> String {
+        guard let said else { return "OMDb answered with error \(status)." }
+        if said.range(of: "invalid api key", options: .caseInsensitive) != nil { return "OMDb didn't accept the key." }
+        if said.range(of: "limit", options: .caseInsensitive) != nil { return "The key's requests for today are used up." }
+        return "OMDb said: \(said)"
+    }
+
     static func url(title: String, year: Int?, type: String?, key: String) -> URL? {
         var items = [URLQueryItem(name: "apikey", value: key), URLQueryItem(name: "t", value: title), URLQueryItem(name: "plot", value: "full")]
         if let year { items.append(URLQueryItem(name: "y", value: "\(year)")) }
@@ -690,11 +961,20 @@ enum OMDbClient {
         clean(value).map(People.split) ?? []
     }
 
-    static func parse(_ data: Data, wanted: MediaTitle) -> MovieDetails? {
+    /// How OMDb names the countries `MediaTitle.country` reads from file names.
+    private static let countryNames = ["US": ["United States", "USA"], "UK": ["United Kingdom", "UK"], "AU": ["Australia"]]
+
+    /// The answer as details, when it is the title wanted. A show's year counts only when the
+    /// file gave one ("Doctor Who 2005"), and so does its country ("The Office UK"). With
+    /// `exactOnly`, only the very name.
+    static func parse(_ data: Data, wanted: MediaTitle, exactOnly: Bool = false) -> MovieDetails? {
         guard let r = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               (r["Response"] as? String) == "True", let title = clean(r["Title"]) else { return nil }
         let year = clean(r["Year"]).flatMap { Int($0.prefix(4)) }
-        guard TitleMatch.score(candidate: title, year: wanted.isEpisode ? nil : year, wanted: wanted) > 0 else { return nil }
+        let score = TitleMatch.score(candidate: title, year: year, wanted: wanted)
+        guard score >= (exactOnly ? 3 : 1) else { return nil }
+        if let names = wanted.country.flatMap({ countryNames[$0] }), let made = clean(r["Country"]),
+           !names.contains(where: { made.contains($0) }) { return nil }
         var d = MovieDetails(title: title, source: "OMDb")
         d.year = year
         d.certificate = clean(r["Rated"]).flatMap { ["Not Rated", "Unrated"].contains($0) ? nil : $0 }

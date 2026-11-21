@@ -43,7 +43,10 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=10
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=1280x720:rate=24 -t 12 -c:v libx264 -preset ultrafast -pix_fmt yuv444p sdr444.mkv
 cd "$ROOT/Driftcast"
 cp "$ROOT/Tests/harness.swift" "$OUT/main.swift"   # top-level code must live in main.swift
-swiftc -swift-version 5 -O -target "$ARCH-apple-macos13" -framework SwiftUI -o "$OUT/run" "$OUT/main.swift" Model/*.swift Media/*.swift Network/*.swift Cast/*.swift Playback/*.swift Subtitles/*.swift Subtitles/OCR/*.swift
+swiftc -swift-version 5 -O -target "$ARCH-apple-macos13" -framework SwiftUI -o "$OUT/run" "$OUT/main.swift" "$ROOT"/Tests/HarnessSupport/*.swift Model/*.swift Media/*.swift Network/*.swift Cast/*.swift Playback/*.swift Subtitles/*.swift Subtitles/OCR/*.swift
 # A private home folder keeps the harness away from the real library and settings.
 mkdir -p "$OUT/home"
+# Each run starts with no playlists or names of its own making. A run that stopped half-way
+# left a test playlist behind, and every run after it found that one instead of its own.
+rm -f "$OUT/home/Library/Application Support/Driftcast/"{library,title-overrides,title-names}.json
 CFFIXED_USER_HOME="$OUT/home" arch "-$ARCH" "$OUT/run" "$OUT/media"

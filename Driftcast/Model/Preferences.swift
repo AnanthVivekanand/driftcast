@@ -26,6 +26,7 @@ enum Prefs {
     static let subtitleScale = "subtitleScale"
     static let openSubtitlesKey = "openSubtitlesAPIKey"
     static let resumePlayback = "resumePlayback"
+    /// Read by nothing since 1.1.3, when playing on became always on; kept so the key is known.
     static let autoPlayNext = "autoPlayNext"
     static let ocrSubtitles = "ocrPictureSubtitles"
     static let autoUpdateCheck = "checkForUpdatesAutomatically"

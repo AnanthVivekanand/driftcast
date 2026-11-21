@@ -1,4 +1,4 @@
-# Driftcast: copyright, licence and acknowledgements
+# Driftcast: copyright, license and acknowledgements
 
 Driftcast
 Copyright (C) 2026 Leech Software, Inc.
@@ -6,7 +6,7 @@ https://leechsoftware.com
 
 Driftcast is freeware: free to use, with no trial, no ads, no account and no time limit.
 
-## Licence
+## License
 
 Driftcast is free software: you can redistribute it and/or modify it under the terms of the
 GNU General Public License as published by the Free Software Foundation, either version 3 of
@@ -16,13 +16,13 @@ Driftcast is distributed in the hope that it will be useful, but WITHOUT ANY WAR
 even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
-The full text of the licence is in the file `LICENSE` (inside the app:
-`Driftcast.app/Contents/Resources/Licenses/LICENSE.txt`, or About Driftcast > Licence). It is
+The full text of the license is in the file `LICENSE` (inside the app:
+`Driftcast.app/Contents/Resources/Licenses/LICENSE.txt`, or About Driftcast > License). It is
 also at <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-In short, and without replacing the licence itself: you may use Driftcast for any purpose,
+In short, and without replacing the license itself: you may use Driftcast for any purpose,
 study and change it, and share it or your changed version, provided that anything you
-distribute stays under the same licence and comes with its source code.
+distribute stays under the same license and comes with its source code.
 
 ## Source code
 
@@ -46,7 +46,7 @@ and convert video; they are not linked into Driftcast.
 
 FFmpeg is Copyright (c) 2000-2026 the FFmpeg developers, <https://ffmpeg.org>. The builds
 below are configured with `--enable-gpl --enable-version3`, so they are licensed under the
-**GNU General Public License, version 3 or later**. FFmpeg's own licence files (`LICENSE.md`,
+**GNU General Public License, version 3 or later**. FFmpeg's own license files (`LICENSE.md`,
 `COPYING.GPLv2`, `COPYING.GPLv3`, `COPYING.LGPLv2.1`, `COPYING.LGPLv3`) are in the same folder
 as the programs.
 
@@ -108,9 +108,9 @@ Driftcast.
 
 These appear only in the project's website and README images, not in the app:
 
-- *Sintel*, © copyright Blender Foundation, <https://durian.blender.org>, licensed under the Creative Commons Attribution 3.0 licence.
-- *Tears of Steel*, © copyright Blender Foundation, <https://mango.blender.org>, licensed under the Creative Commons Attribution 3.0 licence.
-- *Elephants Dream*, © copyright 2006 Blender Foundation and Netherlands Media Art Institute, <https://orange.blender.org>, licensed under the Creative Commons Attribution 2.5 licence.
+- *Sintel*, © copyright Blender Foundation, <https://durian.blender.org>, licensed under the Creative Commons Attribution 3.0 license.
+- *Tears of Steel*, © copyright Blender Foundation, <https://mango.blender.org>, licensed under the Creative Commons Attribution 3.0 license.
+- *Elephants Dream*, © copyright 2006 Blender Foundation and Netherlands Media Art Institute, <https://orange.blender.org>, licensed under the Creative Commons Attribution 2.5 license.
 
 The plot text visible in the screenshots is from Wikipedia, licensed under CC BY-SA. Frames were scaled and captured inside the app. None of these parties endorses Driftcast.
 
@@ -126,7 +126,7 @@ No code was taken from these projects, but Driftcast's design learned from them:
 Some of the formats Driftcast can read or produce (H.264, HEVC, AAC, Dolby Digital and
 others) are covered by patents in some countries. The GNU General Public License does not
 grant rights under other people's patents. If you redistribute Driftcast or use it
-commercially, checking whether you need a patent licence is your responsibility.
+commercially, checking whether you need a patent license is your responsibility.
 
 ## Trademarks
 
@@ -159,7 +159,7 @@ The full policy is in `PRIVACY.md`, at <https://github.com/leechsoftware/driftca
 ## Data sources
 
 Film details come from Wikipedia (<https://en.wikipedia.org>; article text is available under
-the Creative Commons Attribution-ShareAlike licence, and the details panel links to the
+the Creative Commons Attribution-ShareAlike license, and the details panel links to the
 article) and Wikidata (<https://www.wikidata.org>, CC0). Film posters shown from Wikipedia
 remain the property of their studios and are displayed, as Wikipedia displays them, to
 identify the film. Show details come from TVmaze (<https://www.tvmaze.com>, whose API asks

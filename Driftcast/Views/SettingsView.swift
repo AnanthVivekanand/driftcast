@@ -11,50 +11,58 @@ struct SettingsView: View {
             SubtitleSettings().tabItem { Label("Subtitles", systemImage: "captions.bubble") }.tag("subtitles")
         }
         .frame(width: 520)
-        // The Licence tab is gone; a remembered selection of it would show an empty pane.
+        // The License tab is gone; a remembered selection of it would show an empty pane.
         .onAppear { if tab == "licence" { tab = "general" } }
     }
 }
 
 private struct GeneralSettings: View {
     @AppStorage(Prefs.resumePlayback) private var resume = true
-    @AppStorage(Prefs.autoPlayNext) private var autoNext = true
-    @AppStorage(Prefs.ffmpegDirectory) private var ffmpegDir = ""
     @AppStorage(Prefs.autoUpdateCheck) private var autoUpdate = true
     @AppStorage(Prefs.onlineDetails) private var onlineDetails = true
     @AppStorage(Prefs.omdbKey) private var omdbKey = ""
+    /// Changes when OMDb last refused the key or answered again, so the line under the key
+    /// is drawn again; what it says is read from `OMDbClient.problem`.
+    @AppStorage(OMDbClient.problemKey) private var omdbProblem = ""
     @AppStorage(Prefs.titleCard) private var titleCard = true
     @AppStorage(Prefs.watchedList) private var watchedList = true
     @ObservedObject private var updater = Updater.shared
-    @State private var version: String?
 
     var body: some View {
         Form {
             Section {
                 Toggle("Resume videos where you left off", isOn: $resume)
-                Toggle("Play the next video in the playlist automatically", isOn: $autoNext)
-            }
-            Section {
-                Toggle("Keep a list of the videos you watch", isOn: $watchedList)
-                Button("Export…") { WatchedList.exportCSV() }
-            } footer: {
-                Text("Each video you play is added to a list kept inside Driftcast's own data, not in your folders. Export, here or in the File menu, saves it as a spreadsheet wherever you choose.")
             }
             Section {
                 Toggle("Look up posters and details online", isOn: $onlineDetails)
                 TextField("OMDb API key (optional)", text: $omdbKey)
                     .textFieldStyle(.roundedBorder)
                     .disabled(!onlineDetails)
+                // What OMDb last said was wrong with this key, where it used to fail unseen
+                // and the ratings just stayed missing.
+                if !omdbProblem.isEmpty, let problem = OMDbClient.problem {
+                    Label {
+                        Text(OMDbClient.problemDate.map { "\(problem) (\($0.formatted(date: .abbreviated, time: .shortened)))" } ?? problem)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                    }
+                    .font(.callout)
+                }
                 Link("Get a free OMDb key", destination: OMDbClient.keyPage)
-                Toggle("Show the poster and details for 5 seconds when a video starts", isOn: $titleCard)
+                // The paragraph that stood under this (where the details come from, what an
+                // OMDb key adds, where the card is placed) was taken out at the user's word,
+                // 2026-11-20; the description and the About window still say it.
+                Toggle("Show poster when a movie starts", isOn: $titleCard)
             } header: {
                 Text("Film and show details")
+            }
+            // Above Updates since 1.1.3 (the user's call, 2026-11-20).
+            Section {
+                Toggle("Keep a list of the videos you watch", isOn: $watchedList)
+                Button("Export…") { WatchedList.exportCSV() }
             } footer: {
-                Text("Posters, plot, director, cast, age ratings and review scores come from Wikipedia, Wikidata and TVmaze; only the title read from the file name is sent. "
-                     + (OMDbClient.builtInKey.isEmpty
-                        ? "A free OMDb key adds IMDb, Rotten Tomatoes and Metacritic ratings for films Wikidata hasn't scored, and for episodes. "
-                        : "Driftcast includes an OMDb key for ratings Wikidata lacks; add your own only if you want a higher daily limit. ")
-                     + "The poster card is placed at the start of the stream for this Mac and AirPlay and shown on a Chromecast's own screen; turn it off if a TV has trouble starting a video.")
+                Text("Each video you play is added to a list kept inside Driftcast's own data, not in your folders. Export, here or in the File menu, saves it as a spreadsheet wherever you choose.")
             }
             if Updater.isAvailable {
                 Section("Updates") {
@@ -68,25 +76,14 @@ private struct GeneralSettings: View {
                     }
                 }
             }
-            Section("ffmpeg") {
-                LabeledContent("Using") {
-                    Text(FFmpeg.ffmpeg?.deletingLastPathComponent().path ?? "Not found")
-                        .foregroundStyle(FFmpeg.ffmpeg == nil ? .red : .secondary)
-                        .textSelection(.enabled)
-                }
-                if let version { Text(version).font(.caption).foregroundStyle(.secondary) }
-                HStack {
-                    Button("Choose Folder…") { choose() }
-                    if !ffmpegDir.isEmpty { Button("Use Default") { ffmpegDir = ""; refresh() } }
-                }
-                Text("Driftcast uses its built-in copy of ffmpeg to read and convert video. Leave this empty unless you want to use a different ffmpeg; then pick a folder that contains ffmpeg and ffprobe.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
-        .frame(height: Updater.isAvailable ? 690 : 580)
-        .task { refresh() }
+        // The ffmpeg section (which copy is in use, Choose Folder…) and the paragraph under the
+        // poster checkbox were taken out at the user's word, 2026-11-20. A folder chosen
+        // before is still honored by `FFmpeg.tool`; only the way to pick one here is gone.
+        // Measured off screen once these were gone: 571 points of content with Updates, so
+        // the same room below it as the Video and Audio panes (about 55 points).
+        .frame(height: Updater.isAvailable ? 627 : 517)
     }
 
     private var updateWords: String {
@@ -99,20 +96,6 @@ private struct GeneralSettings: View {
         }
     }
 
-    private func refresh() {
-        Task { version = await FFmpeg.versionString() }
-    }
-
-    private func choose() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.message = "Choose the folder containing ffmpeg and ffprobe."
-        if panel.runModal() == .OK, let url = panel.url {
-            ffmpegDir = url.path
-            refresh()
-        }
-    }
 }
 
 private struct VideoSettings: View {
@@ -214,9 +197,9 @@ private struct SubtitleSettings: View {
             // First, because it decides whether the rest of the page matters: with it on, the
             // sections below are grayed out.
             Section {
+                // The paragraph that stood under this (what the switch turns off) was taken
+                // out at the user's word, 2026-11-20.
                 Toggle("I don't care about subtitles", isOn: $hideNotices)
-            } footer: {
-                Text("Captions never come on by themselves, none are searched for as a video starts, and the notices about them are hidden: the bar under the video window and the Closed Captions section of the details panel. The Subtitles menu and the playback bar's button still work. Turn this off to change the settings below.")
             }
             Section {
                 LanguagePicker(title: "Closed caption language", selection: $language)
@@ -249,8 +232,8 @@ private struct SubtitleSettings: View {
                     }
                 }
                 .dimmedWhenDisabled()
-            } footer: {
-                Text("Picture subtitles are read with text recognition the first time they're used, which takes a minute for a film; with this off they are drawn into the video instead. The size applies on this Mac and on a Chromecast, and is also in the Subtitles menu; an AirPlay TV uses its own subtitle settings.")
+                // The paragraph that stood under these two (what the conversion costs, where
+                // the size applies) was taken out at the user's word, 2026-11-20.
             }
             .disabled(hideNotices)
             Section {
@@ -269,7 +252,7 @@ private struct SubtitleSettings: View {
             .disabled(hideNotices)
         }
         .formStyle(.grouped)
-        .frame(height: 690)   // four sections and their footers; the window sizes to this
+        .frame(height: 611)   // 555 points of content, measured off screen; the window sizes to this
     }
 }
 

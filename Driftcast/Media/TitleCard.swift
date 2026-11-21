@@ -5,7 +5,10 @@ import Foundation
 /// poster on the left and the title with what is known about the film on the right, on black.
 /// Drawn here rather than by ffmpeg, which has no text filter in every build.
 enum TitleCard {
-    static let seconds = 5.0
+    /// Three seconds since 1.1.3 (the user's call, 2026-11-20; five before): 0.4 s fading
+    /// in, about two to read it, 0.5 s fading out. A Chromecast stays on its own poster
+    /// screen for the same time.
+    static let seconds = 3.0
 
     /// A JPEG of `size` (made even, at least 320 x 180) for the encoder.
     static func render(poster: Data?, title: String, details: MovieDetails?, size: CGSize) -> Data? {
@@ -44,7 +47,7 @@ enum TitleCard {
             textLeft = rect.maxX + w * 0.05
         }
 
-        // The words, top to bottom, with their size and colour.
+        // The words, top to bottom, with their size and color.
         struct Line {
             var text: String
             var size: CGFloat

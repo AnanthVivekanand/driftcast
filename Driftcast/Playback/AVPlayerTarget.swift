@@ -16,6 +16,7 @@ final class AVPlayerTarget: PlaybackTarget {
     private var statusObservation: NSKeyValueObservation?
     private var externalObservation: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var failObserver: NSObjectProtocol?
     private var diagnostics: [NSObjectProtocol] = []
     private var waitingObservation: NSKeyValueObservation?
     private var redrawSubtitles: Task<Void, Never>?
@@ -99,12 +100,23 @@ final class AVPlayerTarget: PlaybackTarget {
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onStatus?(TargetStatus(state: .idle, finished: true)) }
         }
+        // A video that stops part-way (the stream ended, the file's disk went away) was only
+        // written to the system log: the picture froze and the bar went on saying "Playing".
+        failObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] note in
+            let reason = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError)?.localizedDescription
+            MainActor.assumeIsolated {
+                self?.onStatus?(TargetStatus(state: .idle, error: reason ?? "The video stopped before its end."))
+            }
+        }
         player.replaceCurrentItem(with: item)
 
         // Wait until AVPlayer has read enough to know whether it can play this.
         for _ in 0..<300 where item.status == .unknown {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
+        // Another video was loaded, or Stop pressed, while this one was being read: it is not
+        // this one's place to seek and start the player.
+        guard player.currentItem === item else { throw CancellationError() }
         if item.status == .failed { throw NSError(domain: "Driftcast", code: 1, userInfo: [NSLocalizedDescriptionKey: Self.describe(item)]) }
 
         if r.startTime > 0.5 {
@@ -114,7 +126,8 @@ final class AVPlayerTarget: PlaybackTarget {
             let option = group.options.first { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) } ?? group.options.first
             item.select(option, in: group)
         }
-        player.play()
+        guard player.currentItem === item else { throw CancellationError() }
+        if r.startPaused { player.pause() } else { player.play() }
     }
 
     private nonisolated static func describe(_ item: AVPlayerItem) -> String {
@@ -134,6 +147,7 @@ final class AVPlayerTarget: PlaybackTarget {
         let t = player.currentTime().seconds
         if t.isFinite { s.time = t }
         s.volume = Double(player.volume)
+        s.muted = player.isMuted
         onStatus?(s)
     }
 
@@ -141,6 +155,8 @@ final class AVPlayerTarget: PlaybackTarget {
         statusObservation = nil
         if let o = endObserver { NotificationCenter.default.removeObserver(o) }
         endObserver = nil
+        if let o = failObserver { NotificationCenter.default.removeObserver(o) }
+        failObserver = nil
     }
 
     func play() { player.play() }
@@ -157,6 +173,7 @@ final class AVPlayerTarget: PlaybackTarget {
     }
 
     func setVolume(_ level: Double) { player.volume = Float(min(1, max(0, level))) }
+    func setMuted(_ muted: Bool) { player.isMuted = muted }
 
     func disconnect() { stop() }
 }

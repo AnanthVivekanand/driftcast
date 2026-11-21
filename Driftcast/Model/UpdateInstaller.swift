@@ -60,12 +60,21 @@ enum UpdateInstaller {
               fm.isWritableFile(atPath: parent.path), fm.isWritableFile(atPath: app.path) else { throw Failure.cantReplace }
     }
 
-    /// Downloads and checks a new copy. Nothing outside the staging folder is touched.
+    /// Every staging folder is named this followed by a UUID.
+    static let stagingPrefix = ".driftcast-update-"
+
+    static func isStagingFolder(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasPrefix(stagingPrefix) && UUID(uuidString: String(name.dropFirst(stagingPrefix.count))) != nil
+    }
+
+    /// Downloads and checks a new copy. Nothing outside the staging folder is touched, and the
+    /// staging folder is removed again unless a checked copy is handed back.
     static func prepare(download source: URL, replacing app: URL, newerThan installed: String,
                         progress: @escaping @Sendable (Double) -> Void) async throws -> Prepared {
         try checkReplaceable(app)
         // Beside the app so that the swap is a rename on one volume, not a slow, breakable copy.
-        let staging = app.deletingLastPathComponent().appendingPathComponent(".driftcast-update-\(UUID().uuidString)", isDirectory: true)
+        let staging = app.deletingLastPathComponent().appendingPathComponent(stagingPrefix + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
             let zip = staging.appendingPathComponent("update.zip")
@@ -73,11 +82,42 @@ enum UpdateInstaller {
             let replacement = try await unpack(zip, into: staging)
             try? FileManager.default.removeItem(at: zip)
             try await Task.detached(priority: .userInitiated) { try verify(replacement, newerThan: installed) }.value
+            // The signature check can't be interrupted, so Cancel pressed during it is only
+            // seen here; without this the unpacked copy stayed beside the app for good.
+            try Task.checkCancellation()
             return Prepared(installed: app, replacement: replacement, staging: staging)
         } catch {
             try? FileManager.default.removeItem(at: staging)
             throw error
         }
+    }
+
+    /// Throws away a prepared copy that won't be swapped in after all.
+    static func discard(_ prepared: Prepared) {
+        try? FileManager.default.removeItem(at: prepared.staging)
+    }
+
+    /// Removes staging folders an earlier run left beside the app: Driftcast quit, or another
+    /// copy took over, during a download, and nothing else would ever remove them. Only those
+    /// untouched for `age` seconds go: a swap under way renames the old copy into its staging
+    /// folder seconds after the folder last changed, so a folder in use is always younger.
+    /// One holding a previous.app is never removed either. The swap script leaves that only
+    /// when neither copy could be put back in place, and it may be the only copy left.
+    @discardableResult
+    static func sweepStaging(beside app: URL, olderThan age: TimeInterval = 600, now: Date = Date()) -> [URL] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: app.appendingPathComponent("Contents").path) else { return [] }
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        let items = (try? fm.contentsOfDirectory(at: app.deletingLastPathComponent(), includingPropertiesForKeys: keys)) ?? []
+        var removed: [URL] = []
+        for item in items where isStagingFolder(item) {
+            guard let values = try? item.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true, values.isSymbolicLink != true,
+                  let changed = values.contentModificationDate, now.timeIntervalSince(changed) > age,
+                  !fm.fileExists(atPath: item.appendingPathComponent("previous.app").path) else { continue }
+            if (try? fm.removeItem(at: item)) != nil { removed.append(item) }
+        }
+        return removed
     }
 
     static func download(_ source: URL, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -101,8 +141,12 @@ enum UpdateInstaller {
         do {
             _ = try await FFmpeg.run(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, unpacked.path])
         } catch {
+            // Cancel stops ditto, which then fails like a damaged zip; it was shown and logged
+            // as "couldn't be opened".
+            if Task.isCancelled { throw CancellationError() }
             throw Failure.badArchive
         }
+        try Task.checkCancellation()
         let items = (try? FileManager.default.contentsOfDirectory(at: unpacked, includingPropertiesForKeys: nil)) ?? []
         let apps = items.filter { $0.pathExtension == "app" }
         guard apps.count == 1 else { throw Failure.badArchive }
@@ -131,26 +175,39 @@ enum UpdateInstaller {
 
     /// Waits for the process to end, swaps the copies by renaming, and opens whichever is then
     /// installed. If the new copy can't be moved in, the old one goes straight back.
+    ///
+    /// The staging folder is removed only when an app is back in its place. If the new copy
+    /// can't go in and the old one can't go back either, the staging folder holds the only
+    /// copies left: it stays, and the old copy is opened from there so that Driftcast still
+    /// runs and can say what happened. The paths arrive as arguments, never inside the script's
+    /// text, so spaces and quotes in them can't change what it does.
     static let swapScript = #"""
     pid="$1"; app="$2"; new="$3"; staging="$4"; opener="$5"
     waited=0
     while kill -0 "$pid" 2>/dev/null; do
         waited=$((waited + 1))
-        if [ "$waited" -gt 300 ]; then rm -rf "$staging"; exit 1; fi
+        if [ "$waited" -gt 300 ]; then echo "Driftcast didn't quit in time; nothing was changed." >&2; rm -rf "$staging"; exit 1; fi
         sleep 0.1
     done
     old="$staging/previous.app"
     if mv "$app" "$old"; then
         mv "$new" "$app" || mv "$old" "$app"
     fi
-    rm -rf "$staging"
-    "$opener" "$app"
+    if [ -d "$app/Contents" ]; then
+        rm -rf "$staging"
+        "$opener" "$app"
+    else
+        echo "Neither copy could be put in place; the old one is at $old." >&2
+        "$opener" "$old"
+    fi
     """#
 
     /// Starts the script that finishes the job once this process has quit. It carries on by
-    /// itself after Driftcast has gone. `opener` is what opens the app afterwards.
+    /// itself after Driftcast has gone. `opener` is what opens the app afterwards. What the
+    /// script and the commands in it say about a failure goes to `report`, for the next launch
+    /// to put in the error log.
     static func swapAfterExit(_ prepared: Prepared, of pid: Int32 = ProcessInfo.processInfo.processIdentifier,
-                              opener: String = "/usr/bin/open") throws {
+                              opener: String = "/usr/bin/open", report: URL? = nil) throws {
         let script = Process()
         script.executableURL = URL(fileURLWithPath: "/bin/sh")
         script.arguments = ["-c", swapScript, "driftcast-update", String(pid),
@@ -158,7 +215,81 @@ enum UpdateInstaller {
         script.standardInput = FileHandle.nullDevice
         script.standardOutput = FileHandle.nullDevice
         script.standardError = FileHandle.nullDevice
+        if let report {
+            try? FileManager.default.createDirectory(at: report.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.createFile(atPath: report.path, contents: nil),
+               let handle = try? FileHandle(forWritingTo: report) {
+                script.standardError = handle
+            }
+        }
         try script.run()
+    }
+
+    /// Where the swap script writes what went wrong: beside the error log.
+    static var swapReport: URL {
+        ErrorLog.url.deletingLastPathComponent().appendingPathComponent("Last update.txt")
+    }
+
+    /// The version in an app's Info.plist, read from the file rather than through `Bundle`,
+    /// which may remember an earlier copy at the same path.
+    static func version(of app: URL) -> String? {
+        NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))?["CFBundleShortVersionString"] as? String
+    }
+
+    // MARK: After the swap
+
+    /// An update handed to the swap script. It is remembered until the next launch, which is
+    /// the first moment anything can tell whether the swap worked: the script runs after
+    /// Driftcast has quit, and a swap that failed reopened the old copy with no word said.
+    struct PendingSwap: Codable, Equatable {
+        /// The version that was to be put in.
+        var version: String
+        /// Where the copy being replaced was.
+        var app: String
+        var page: URL
+        var download: URL?
+
+        var release: AppRelease { AppRelease(version: version, page: page, download: download) }
+    }
+
+    enum AfterSwap: Equatable {
+        /// The copy that is running is the new version.
+        case installed
+        /// The copy that was to be replaced is still the old version: the swap didn't happen.
+        case notInstalled
+        /// This copy was moved aside into its staging folder and couldn't be put back.
+        case movedAside
+        /// Another copy of Driftcast, somewhere else: the record is left for the right one.
+        case otherCopy
+    }
+
+    static func afterSwap(_ pending: PendingSwap, running version: String, at bundle: URL) -> AfterSwap {
+        let expected = URL(fileURLWithPath: pending.app).standardizedFileURL
+        let here = bundle.standardizedFileURL
+        if here.path == expected.path {
+            return AppVersion.isNewer(pending.version, than: version) ? .notInstalled : .installed
+        }
+        let folder = here.deletingLastPathComponent()
+        if isStagingFolder(folder), folder.deletingLastPathComponent().path == expected.deletingLastPathComponent().path {
+            return .movedAside
+        }
+        return .otherCopy
+    }
+
+    static let pendingSwapKey = "updatePendingSwap"
+
+    static func remember(_ pending: PendingSwap, in defaults: UserDefaults = .standard) {
+        defaults.set(try? JSONEncoder().encode(pending), forKey: pendingSwapKey)
+        // Driftcast quits straight after this; the record must be on disk before it goes.
+        defaults.synchronize()
+    }
+
+    static func pendingSwap(in defaults: UserDefaults = .standard) -> PendingSwap? {
+        defaults.data(forKey: pendingSwapKey).flatMap { try? JSONDecoder().decode(PendingSwap.self, from: $0) }
+    }
+
+    static func forgetPendingSwap(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: pendingSwapKey)
     }
 }
 

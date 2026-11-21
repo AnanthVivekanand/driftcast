@@ -33,8 +33,10 @@ struct DriftcastApp: App {
                 .onAppear { discovery.start(); Updater.shared.start() }
         }
         // The first time only (macOS remembers the size after that). Tall enough that the
-        // details panel, when opened, shows an episode through its closed captions notice.
-        .defaultSize(width: 980, height: 670)
+        // details panel shows an episode's screenshot, the show's poster and the title lines
+        // under it without scrolling: the size the user's own window was at when they asked
+        // for it as the default (2026-11-21; 670 high before the screenshot went on top).
+        .defaultSize(width: 980, height: 746)
         .commands {
             AboutCommands()
             PlaybackCommands(player: player, library: library)
@@ -42,11 +44,20 @@ struct DriftcastApp: App {
             SubtitleCommands(player: player)
             HelpCommands()
         }
+        // Files opened from the Finder go to the app delegate and nowhere else. Left to itself
+        // SwiftUI answers an open by closing a single window and making it again, and closing
+        // the main window quits Driftcast: with the app already running, a video
+        // double-clicked in the Finder was listed and the app was gone (found 2026-11-20, in
+        // 1.1.2 and before). It has to be said on the scene, and on both: the same modifier
+        // on the view inside changes nothing, and with only this scene marked SwiftUI remakes
+        // the Video window instead, which pauses what is playing.
+        .handlesExternalEvents(matching: [])
 
         Window("Video", id: "video") {
             VideoWindow()
                 .environmentObject(player)
         }
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 960, height: 540)
 
         Settings {
@@ -60,7 +71,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var library: Library?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MainActor.assumeIsolated { SubtitleSizeMenuItem.shared.install() }
+        // The details panel, with the poster, is open whenever Driftcast starts (the user's
+        // call, 2026-11-20); closing it lasts until the next launch.
+        Prefs.defaults.set(true, forKey: Prefs.showDetails)
+        MainActor.assumeIsolated {
+            SubtitleSizeMenuItem.shared.install()
+            VideoWindowOrder.install()
+        }
+        // ⌘ with an arrow is the Playback menu's (volume, next and previous video), and in a
+        // text box it is how the cursor moves and text is selected: ⌘← to the start, ⇧⌘→ to
+        // select to the end. The menu took them first, in every text box in the app. With the
+        // keyboard in a text box they now go to the text.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let arrows: Set<UInt16> = [123, 124, 125, 126]
+            let flags = event.modifierFlags.intersection([.command, .option, .control])
+            guard flags == .command, arrows.contains(event.keyCode),
+                  let text = (event.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView else { return event }
+            text.keyDown(with: event)
+            return nil
+        }
         WatchedList.takeInOldList()
         // The red close button on the main window quits Driftcast, as the user expects of a
         // single-window player. Other windows (Video, Settings) just close.
@@ -91,19 +120,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.player?.shutdown()   // records where the current video was stopped
             Self.library?.saveNow()
         }
+        // A stream still starting isn't the player's yet: its ffmpeg is ended here, before
+        // the folder that would have led to it is gone.
+        MediaServer.shared.stopAll()
+        // The Chromecast is told to close its player; a moment for that to leave this Mac.
+        CastChannel.waitForClosing(upTo: 0.5)
         try? FileManager.default.removeItem(at: StreamSession.temporaryRoot)
     }
 
     /// Files opened from Finder ("Open With", dropping on the Dock icon) are added and played.
     func application(_ application: NSApplication, open urls: [URL]) {
-        MainActor.assumeIsolated { _ = Self.player?.open(urls) }
+        MainActor.assumeIsolated {
+            guard let player = Self.player, !player.open(urls) else { return }
+            // Said, where nothing at all used to happen: a file that isn't a video, or a
+            // folder with none in it.
+            let alert = NSAlert()
+            alert.messageText = urls.count == 1 ? "“\(urls[0].lastPathComponent)” has no video Driftcast can play" : "No videos were found"
+            alert.informativeText = "Driftcast plays video and sound files, or a folder of them: MKV, MP4, AVI, MOV and most other formats."
+            alert.runModal()
+        }
     }
 }
 
 struct PlaybackCommands: Commands {
     @ObservedObject var player: PlaybackController
     let library: Library
-    @AppStorage(Prefs.showDetails) private var showDetails = false
+    @AppStorage(Prefs.showDetails) private var showDetails = true
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
@@ -115,12 +157,14 @@ struct PlaybackCommands: Commands {
             Button("New Playlist") { library.newPlaylist() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
-            // The selected video, else the playing one, in the details panel.
+            // The selected video, else the playing one, in a Details window of its own.
             Button("Details") {
-                if player.infoItem == nil { player.infoItem = player.nowPlaying }
-                showDetails = true
+                if let item = player.infoItem ?? player.nowPlaying {
+                    DetailsWindow.shared.show(item, player: player, library: library)
+                }
             }
             .keyboardShortcut("i")
+            .disabled(player.infoItem == nil && player.nowPlaying == nil)
             Button("Show in Finder") { player.revealInFinder() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(player.nowPlaying == nil)
@@ -129,7 +173,10 @@ struct PlaybackCommands: Commands {
             Button("Export Watched Videos…") { WatchedList.exportCSV() }
         }
         CommandGroup(after: .sidebar) {
-            Toggle("Show Details", isOn: $showDetails)
+            // Named for what it will do, as the Finder's Show/Hide Sidebar is: a ticked
+            // "Show Details" didn't read as the way to open and close the panel (the user's
+            // request, 2026-11-21).
+            Button(showDetails ? "Hide Details" : "Show Details") { showDetails.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
         }
         CommandMenu("Playback") {
@@ -142,23 +189,30 @@ struct PlaybackCommands: Commands {
             // Option-based so Cmd+arrows still move the cursor when renaming a playlist.
             Button("Skip Forward 10 Seconds") { player.skip(10) }
                 .keyboardShortcut(.rightArrow, modifiers: .option)
+                .disabled(player.nowPlaying == nil)
             Button("Skip Back 10 Seconds") { player.skip(-10) }
                 .keyboardShortcut(.leftArrow, modifiers: .option)
+                .disabled(player.nowPlaying == nil)
             Button("Skip Forward 1 Minute") { player.skip(60) }
                 .keyboardShortcut(.rightArrow, modifiers: [.option, .shift])
+                .disabled(player.nowPlaying == nil)
             Button("Skip Back 1 Minute") { player.skip(-60) }
                 .keyboardShortcut(.leftArrow, modifiers: [.option, .shift])
+                .disabled(player.nowPlaying == nil)
             Divider()
             Button("Next Video") { player.next() }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
                 .disabled(!player.hasNext)
             Button("Previous Video") { player.previous() }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+                .disabled(!player.hasPrevious)
             Divider()
             Button("Volume Up") { player.nudgeVolume(0.05) }
                 .keyboardShortcut(.upArrow)
             Button("Volume Down") { player.nudgeVolume(-0.05) }
                 .keyboardShortcut(.downArrow)
+            Toggle("Mute", isOn: Binding(get: { player.deviceMuted }, set: { player.setMuted($0) }))
+                .disabled(player.nowPlaying == nil)
             Divider()
             // The same controls as the bar's audio button and its adjustments popover.
             Menu("Audio Track") {
@@ -168,7 +222,10 @@ struct PlaybackCommands: Commands {
                                                           set: { if $0 { player.selectAudio(track.index) } }))
                     }
                 } else {
-                    Text(player.nowPlaying == nil ? "Play a video to choose its audio track" : "This video has one audio track")
+                    // With one track the menu lists it; this is a video with none, or one
+                    // that is still being read.
+                    Text(player.nowPlaying == nil ? "Play a video to choose its audio track"
+                         : (player.info == nil ? "Reading the video…" : "This video has no audio tracks"))
                 }
             }
             Toggle("Volume Booster", isOn: Binding(get: { player.options.volumeBoost }, set: { player.setVolumeBoost($0) }))
@@ -293,10 +350,15 @@ struct SubtitleCommands: Commands {
                 }
             }
             Divider()
-            Button("Add Subtitle File…") { player.chooseSubtitleFile() }
-                .disabled(player.nowPlaying == nil)
+            // For the video playing, else the one selected in the list: these were grayed out
+            // with nothing playing, though the details panel offers both for the selected
+            // video (the user's report, 2026-11-21).
+            Button("Add Subtitle File…") { player.chooseSubtitleFile(for: player.subtitleTarget) }
+                .disabled(player.subtitleTarget == nil)
             Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
-                .disabled(player.nowPlaying == nil)
+                .disabled(player.subtitleTarget == nil)
+            Button("Read Subtitles Again") { player.readSubtitlesAgain() }
+                .disabled(!player.canReadSubtitlesAgain)
             Divider()
             // While AirPlaying the TV draws the subtitles at its own size, so the size
             // controls (these and SubtitleSizeMenuItem's slider) are hidden, with a line saying
@@ -317,6 +379,9 @@ struct SubtitleCommands: Commands {
             if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, OpenSubtitlesClient.builtInKey.isEmpty {
                 Button("Get a Free OpenSubtitles API Key…") { NSWorkspace.shared.open(OpenSubtitlesClient.keyPage) }
                 Button("Enter API Key…") { showSubtitleSettings() }
+                // A line between the key items and Settings, as between the menu's other groups
+                // (the user's request, 2026-11-21).
+                Divider()
             }
             Button("Subtitle Settings…") { showSubtitleSettings() }
         }

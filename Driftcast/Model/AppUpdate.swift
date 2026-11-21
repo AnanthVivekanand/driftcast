@@ -30,6 +30,9 @@ struct AppRelease: Equatable, Sendable {
     var page: URL
     /// The app's zip or disk image attached to the release, when there is one.
     var download: URL?
+    /// What the release says is new, as written on GitHub (Markdown). Shown as plain text
+    /// through `ReleaseNotes`, never as a web page.
+    var notes: String? = nil
 }
 
 enum AppVersion {
@@ -111,8 +114,10 @@ enum GitHubReleases {
         let assets = decoded.assets ?? []
         let file = assets.first { $0.name?.lowercased().hasSuffix(".zip") == true }
             ?? assets.first { $0.name?.lowercased().hasSuffix(".dmg") == true }
+        let notes = decoded.body?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .release(AppRelease(version: AppVersion.display(tag), page: page,
-                                   download: secureURL(file?.browser_download_url)))
+                                   download: secureURL(file?.browser_download_url),
+                                   notes: notes?.isEmpty == false ? notes : nil))
     }
 
     /// Only https links to GitHub are opened on the user's behalf.
@@ -127,11 +132,74 @@ enum GitHubReleases {
         var html_url: String?
         var draft: Bool?
         var prerelease: Bool?
+        var body: String?
         var assets: [Asset]?
 
         struct Asset: Decodable {
             var name: String?
             var browser_download_url: String?
         }
+    }
+}
+
+/// A release's notes made into plain lines for the update dialog. GitHub's notes are Markdown,
+/// and Driftcast's are headings and bullets ("### Fixed", "- **Rename a video:** ..."). They
+/// are only ever shown as text: links keep their words and lose their address, pictures and
+/// HTML are dropped, so nothing in them is opened, loaded or run.
+enum ReleaseNotes {
+    struct Line: Equatable, Hashable {
+        enum Kind: Equatable, Hashable { case heading, bullet, text }
+        var kind: Kind
+        var text: String
+    }
+
+    /// Enough for any one version's notes; a longer text is cut, and the release page has it all.
+    static let maximumLines = 60
+
+    static func lines(_ markdown: String) -> [Line] {
+        // Bounded before any pattern runs over it, so an enormous text costs nothing.
+        var text = String(markdown.prefix(20_000)).replacingOccurrences(of: "\r\n", with: "\n")
+        text = replace(#"<!--.*?(-->|$)"#, in: text, with: "", options: [.dotMatchesLineSeparators])
+        var lines: [Line] = []
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            // Rules ("---") and code fences carry nothing to read.
+            if line.allSatisfy({ "-*_=".contains($0) }) || line.hasPrefix("```") || line.hasPrefix("~~~") { continue }
+            var kind = Line.Kind.text
+            while line.hasPrefix(">") { line = line.dropFirst().trimmingCharacters(in: .whitespaces) }
+            if let heading = line.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
+                kind = .heading
+                line = String(line[heading.upperBound...]).replacingOccurrences(of: #"\s+#+$"#, with: "", options: .regularExpression)
+            } else if let bullet = line.range(of: #"^[-*+]\s+"#, options: .regularExpression) {
+                kind = .bullet
+                line = String(line[bullet.upperBound...])
+            }
+            line = inline(line)
+            guard !line.isEmpty else { continue }
+            lines.append(Line(kind: kind, text: String(line.prefix(600))))
+            if lines.count == maximumLines { break }
+        }
+        return lines
+    }
+
+    /// Emphasis, code marks, links, pictures and tags reduced to the words a person reads.
+    private static func inline(_ text: String) -> String {
+        var s = text
+        s = replace(#"!\[[^\]]*\]\([^)]*\)"#, in: s, with: "")                 // pictures
+        s = replace(#"\[([^\]]+)\]\([^)]*\)"#, in: s, with: "$1")              // [words](address)
+        s = replace(#"<(https?://[^>\s]+)>"#, in: s, with: "$1")               // <address>
+        s = replace(#"<[A-Za-z/!][^>]*>"#, in: s, with: "")                    // HTML tags
+        for mark in ["**", "__", "~~", "`"] { s = s.replacingOccurrences(of: mark, with: "") }
+        for (entity, character) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
+            s = s.replacingOccurrences(of: entity, with: character)
+        }
+        s = replace(#"\s{2,}"#, in: s, with: " ")
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func replace(_ pattern: String, in text: String, with template: String,
+                                options: NSRegularExpression.Options = []) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return text }
+        return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
     }
 }

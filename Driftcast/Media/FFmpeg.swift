@@ -7,7 +7,7 @@ enum FFmpegError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notFound:
-            return "The media engine (ffmpeg) bundled with Driftcast is missing or can't run on this Mac. Reinstall Driftcast, or choose a folder containing ffmpeg and ffprobe in Settings."
+            return "The media engine (ffmpeg) bundled with Driftcast is missing or can't run on this Mac. Reinstall Driftcast."
         case .failed(let message):
             return message
         }
@@ -16,7 +16,8 @@ enum FFmpegError: LocalizedError {
 
 /// Locates and runs the ffmpeg / ffprobe command-line tools.
 ///
-/// Search order: the folder chosen in Settings, a copy bundled in Contents/Resources/ffmpeg,
+/// Search order: a folder named in the `ffmpegDirectory` default (Settings offered one until
+/// 1.1.3; the tests still set it), a copy bundled in Contents/Resources/ffmpeg,
 /// then Homebrew and MacPorts locations.
 enum FFmpeg {
     static let searchDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
@@ -69,9 +70,18 @@ enum FFmpeg {
     static var ffprobe: URL? { tool("ffprobe") }
     static var isAvailable: Bool { ffmpeg != nil && ffprobe != nil }
 
+    /// Thrown by `run` when the tool didn't finish within its time limit.
+    struct TimedOut: LocalizedError {
+        var tool: String
+        var seconds: Double
+        var errorDescription: String? { "\(tool) didn't finish within \(Int(seconds)) seconds." }
+    }
+
     /// Runs a tool to completion and returns stdout. Throws with the tail of stderr on failure.
-    /// Cancelling the calling task terminates the process.
-    static func run(_ executable: URL, _ arguments: [String]) async throws -> Data {
+    /// Canceling the calling task terminates the process and throws `CancellationError`.
+    /// With a `timeout`, a tool still running then is ended and `TimedOut` thrown, even if it
+    /// won't die (a process waiting on a disk that stopped answering ignores signals).
+    static func run(_ executable: URL, _ arguments: [String], timeout: Double? = nil) async throws -> Data {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -79,11 +89,29 @@ enum FFmpeg {
         process.standardOutput = out
         process.standardError = err
         process.standardInput = FileHandle.nullDevice
+        let run = RunState()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                run.begin(cont)
                 DispatchQueue.global(qos: .userInitiated).async {
-                    do { try process.run() } catch { cont.resume(throwing: error); return }
+                    // A cancel that came before the start would otherwise find nothing to stop,
+                    // and the tool ran to its end.
+                    do {
+                        guard try run.start(process) else { run.finish(.failure(CancellationError())); return }
+                    } catch {
+                        run.finish(.failure(error)); return
+                    }
+                    if let timeout {
+                        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                            guard run.expire(process) else { return }
+                            run.finish(.failure(TimedOut(tool: executable.lastPathComponent, seconds: timeout)))
+                            // The polite signal first, then one that can't be ignored.
+                            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+                                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                            }
+                        }
+                    }
                     let errBox = DataBox()
                     let group = DispatchGroup()
                     group.enter()
@@ -94,16 +122,19 @@ enum FFmpeg {
                     let data = out.fileHandleForReading.readDataToEndOfFile()
                     group.wait()
                     process.waitUntilExit()
-                    if process.terminationStatus == 0 {
-                        cont.resume(returning: data)
+                    if run.isCanceled {
+                        // Whatever it wrote before it was stopped is only part of the answer.
+                        run.finish(.failure(CancellationError()))
+                    } else if process.terminationStatus == 0 {
+                        run.finish(.success(data))
                     } else {
                         let msg = String(decoding: errBox.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                        cont.resume(throwing: FFmpegError.failed(msg.isEmpty ? "\(executable.lastPathComponent) exited with status \(process.terminationStatus)" : String(msg.suffix(500))))
+                        run.finish(.failure(FFmpegError.failed(msg.isEmpty ? "\(executable.lastPathComponent) exited with status \(process.terminationStatus)" : String(msg.suffix(500)))))
                     }
                 }
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            run.cancel(process)
         }
     }
 
@@ -146,6 +177,55 @@ enum FFmpeg {
 }
 
 private final class DataBox: @unchecked Sendable { var data = Data() }
+
+/// One `FFmpeg.run`: whether it was canceled or ran out of time, and its answer, given once.
+private final class RunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var canceled = false
+    private var answered = false
+    private var continuation: CheckedContinuation<Data, Error>?
+
+    func begin(_ cont: CheckedContinuation<Data, Error>) {
+        lock.lock(); continuation = cont; lock.unlock()
+    }
+
+    var isCanceled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return canceled
+    }
+
+    /// Starts the process unless the run was canceled first. Under the lock, so a cancel
+    /// either comes before (and nothing starts) or finds the process running.
+    func start(_ process: Process) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if canceled { return false }
+        try process.run()
+        return true
+    }
+
+    func cancel(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        canceled = true
+        if process.isRunning { process.terminate() }
+    }
+
+    /// True when the time limit is what ends the run (it hadn't finished or been canceled).
+    func expire(_ process: Process) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !answered, !canceled else { return false }
+        if process.isRunning { process.terminate() }
+        return true
+    }
+
+    func finish(_ result: Result<Data, Error>) {
+        lock.lock()
+        let cont = answered ? nil : continuation
+        answered = true
+        continuation = nil
+        lock.unlock()
+        cont?.resume(with: result)
+    }
+}
 
 /// Caps how many child processes run at once (probing a big playlist would otherwise spawn dozens).
 actor AsyncLimiter {

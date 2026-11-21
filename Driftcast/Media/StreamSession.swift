@@ -15,6 +15,8 @@ final class TranscodeJob: @unchecked Sendable {
     private var launchFailure: String?
     private var _landing: Int?
     private var paused = false
+    /// Set by `stop`: from then on the job is never started or frozen.
+    private var stopping = false
     private var discardedBelow = 0
     private(set) var tracks: [MP4Boxes.Track] = []
     var lastRequest = Date()
@@ -45,6 +47,8 @@ final class TranscodeJob: @unchecked Sendable {
     }
 
     private func launch() throws {
+        lock.lock(); let refused = stopping; lock.unlock()
+        if refused { throw FFmpegError.failed("The stream has stopped.") }
         guard let exe = FFmpeg.ffmpeg else { throw FFmpegError.notFound }
         process.executableURL = exe
         process.arguments = arguments
@@ -84,6 +88,7 @@ final class TranscodeJob: @unchecked Sendable {
         lock.lock()
         let wasPaused = paused
         paused = false
+        stopping = true
         lock.unlock()
         guard isRunning else { return }
         if wasPaused { process.resume() }   // a stopped process wouldn't act on the signal
@@ -95,12 +100,32 @@ final class TranscodeJob: @unchecked Sendable {
         return paused
     }
 
-    /// Freezes or thaws ffmpeg (see `StreamSession.pace`).
+    /// Freezes or thaws ffmpeg (see `StreamSession.pace`). Never once the job is stopping: the
+    /// pacing loop can still be holding it from just before, and a job frozen after its
+    /// terminate signal never acts on it, so it stayed frozen until the Mac restarted.
     func setPaused(_ wanted: Bool) {
         lock.lock(); defer { lock.unlock() }
-        guard wanted != paused, launched, process.isRunning else { return }
+        guard wanted != paused, !stopping, launched, process.isRunning else { return }
         paused = wanted
         if wanted { process.suspend() } else { process.resume() }
+    }
+
+    /// Stops the job and deletes everything it wrote once ffmpeg has gone (it can finish one
+    /// more file as it stops). For jobs the session has let go of: nothing can serve their
+    /// files any more, and a far seek in a large remux left gigabytes of them behind.
+    /// A few seconds' grace lets a request that was reading from the job notice that it ended.
+    func discard() {
+        stop()
+        Task.detached(priority: .utility) { [self] in
+            let deadline = Date().addingTimeInterval(10)
+            while isRunning, Date() < deadline { try? await Task.sleep(nanoseconds: 100_000_000) }
+            // ffmpeg stuck on a disk that stopped answering ignores the polite signal.
+            if isRunning { kill(process.processIdentifier, SIGKILL) }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            let fm = FileManager.default
+            let names = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+            for name in names where name.hasPrefix(prefix) { try? fm.removeItem(at: directory.appendingPathComponent(name)) }
+        }
     }
 
     /// Deletes the files before `fileIndex`, which the device has already played.
@@ -139,7 +164,11 @@ final class TranscodeJob: @unchecked Sendable {
         let parsed = MP4Boxes.tracks(inInit: data)
         guard !parsed.isEmpty else { return nil }
         tracks = parsed
-        let start = parsed.map(\.presentationOffset).max() ?? 0
+        // ffmpeg cuts its files at the picture's keyframes, so the picture says where the first
+        // one starts. Delayed audio comes from a second input that starts later: taking the
+        // latest track put a remux with one-second keyframes and +0.6 s of delay one segment
+        // late, and the segment wanted was never served.
+        let start = parsed.first(where: \.isVideo)?.presentationOffset ?? parsed.map(\.presentationOffset).max() ?? 0
         let l = grid.nearestIndex(to: start)
         _landing = l
         return l
@@ -210,6 +239,7 @@ final class StreamSession: @unchecked Sendable {
     private var canonicalTracks: [MP4Boxes.Track] = []
     private var route = StreamPlan.Route.gpu
     private var stopped = false
+    private var failureLogged = false
 
     static let lookahead = 15
     static let maxJobs = 2
@@ -316,7 +346,7 @@ final class StreamSession: @unchecked Sendable {
         route = next
         let failed = jobs
         jobs = []
-        failed.forEach { $0.stop() }
+        failed.forEach { $0.discard() }
         return true
     }
 
@@ -428,6 +458,14 @@ final class StreamSession: @unchecked Sendable {
 
     var deviceDuration: Double { duration + (intro?.duration ?? 0) }
 
+    /// The file time where the title card sits in the playlist, when that is after the start of
+    /// the film (playback began part-way through). Seeking before it and playing on would run
+    /// through the card again in the middle of the film, so such a seek needs a new stream.
+    var cardFileTime: Double? {
+        guard let grid, let intro, intro.atSegment > 0 else { return nil }
+        return grid.start(of: intro.atSegment)
+    }
+
     private func waitForInit(of job: TranscodeJob) async throws {
         let deadline = Date().addingTimeInterval(60)
         while Date() < deadline {
@@ -455,8 +493,10 @@ final class StreamSession: @unchecked Sendable {
     }
 
     private func forget(_ job: TranscodeJob) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         jobs.removeAll { $0 === job }
+        lock.unlock()
+        job.discard()
     }
 
     func stop() {
@@ -489,14 +529,24 @@ final class StreamSession: @unchecked Sendable {
     @discardableResult
     private func spawn(at segment: Int) -> TranscodeJob {
         lock.lock()
-        if jobs.count >= Self.maxJobs, let victim = jobs.min(by: { $0.lastRequest < $1.lastRequest }) {
-            victim.stop()
-            jobs.removeAll { $0 === victim }
+        let ended = stopped
+        var victim: TranscodeJob?
+        if !ended, jobs.count >= Self.maxJobs, let oldest = jobs.min(by: { $0.lastRequest < $1.lastRequest }) {
+            victim = oldest
+            jobs.removeAll { $0 === oldest }
         }
         lock.unlock()
+        victim?.discard()
         let job = makeJob(startSegment: segment, limitSeconds: nil)
+        // A request still waiting when the stream stopped must not start another ffmpeg: nothing
+        // would stop that one. The job is handed back stopped, so its caller fails at once.
+        if ended { job.stop() }
         try? job.start()
-        lock.lock(); jobs.append(job); lock.unlock()
+        lock.lock()
+        let keep = !stopped     // `stop` may have run while this one was starting
+        if keep { jobs.append(job) }
+        lock.unlock()
+        if !keep { job.stop() }
         return job
     }
 
@@ -541,10 +591,19 @@ final class StreamSession: @unchecked Sendable {
                         throw FFmpegError.failed(msg.isEmpty ? "The converter stopped unexpectedly." : "The converter failed: \(msg)")
                     }
                     forget(job)
-                    job = spawn(at: n)
+                    job = spawn(at: startForRetry(of: n, after: job, in: grid, restarts: restarts))
                     job.lastRequestedSegment = n
                     continue
                 }
+            } else if let landed = job.landing(in: grid), landed > n {
+                // Still running, but its first file is a later segment than n, so it will never
+                // write n. Waiting for it ended only at the two-minute deadline.
+                restarts += 1
+                if restarts > 3 { throw FFmpegError.failed("The converter couldn't start at this point of the video.") }
+                forget(job)
+                job = spawn(at: startForRetry(of: n, after: job, in: grid, restarts: restarts))
+                job.lastRequestedSegment = n
+                continue
             }
             try await Task.sleep(nanoseconds: 100_000_000)
             if let other = jobFor(n) {
@@ -553,6 +612,30 @@ final class StreamSession: @unchecked Sendable {
             }
         }
         throw FFmpegError.failed("Timed out waiting for the converter.")
+    }
+
+    /// Writes the first segment of this stream that a device asked for and didn't get to the
+    /// error log, with what ffmpeg last said. The device itself shows only a spinner or
+    /// "HTTP 503", so without this the reason reached nobody. Later failures of the same stream
+    /// are the same trouble seen again, and those after it stopped are expected.
+    func logFailure(segment n: Int, error: Error) {
+        guard !(error is CancellationError), let grid, n >= 0, n < grid.count else { return }
+        lock.lock()
+        let first = !failureLogged && !stopped
+        failureLogged = true
+        let said = jobs.map(\.lastError).last { !$0.isEmpty }
+        lock.unlock()
+        guard first else { return }
+        var detail = "\(source.lastPathComponent), segment \(n) of \(grid.count): \(ErrorLog.describe(error))"
+        if let said, !error.localizedDescription.contains(said) { detail += " ffmpeg said: " + String(said.suffix(600)) }
+        ErrorLog.record("Converter", detail)
+    }
+
+    /// Where to start again for segment `n`: at n, unless the last try began after it, in which
+    /// case a little earlier, since the same start would land in the same place.
+    private func startForRetry(of n: Int, after job: TranscodeJob, in grid: SegmentGrid, restarts: Int) -> Int {
+        guard let landed = job.landing(in: grid), landed > n else { return n }
+        return max(0, n - restarts)
     }
 
     /// Frees the disk behind the playhead.
@@ -656,14 +739,11 @@ final class StreamSession: @unchecked Sendable {
 
         var inf = "BANDWIDTH=\(estimatedBandwidth)"
         if !codecs.isEmpty { inf += ",CODECS=\"\(codecs.joined(separator: ","))\"" }
-        if let v = plan.video, v.width > 0, v.height > 0, !plan.isAudioOnly {
-            var width = v.width, height = v.height
-            if case .transcode(let maxHeight, _, _) = plan.videoAction, v.height > maxHeight {
-                height = maxHeight
-                width = max(2, v.width * maxHeight / v.height / 2 * 2)
-            }
-            inf += ",RESOLUTION=\(width)x\(height)"
-            if v.fps > 0 { inf += String(format: ",FRAME-RATE=%.3f", v.fps) }
+        if let v = plan.video, let size = plan.outputVideoSize {
+            inf += ",RESOLUTION=\(Int(size.width))x\(Int(size.height))"
+            // The converted rate: the Cast player picks its decoder by it, and a 120 fps clip
+            // converted to 60 was announced at 120.
+            if let fps = plan.outputFrameRate, fps > 0 { inf += String(format: ",FRAME-RATE=%.3f", fps) }
             if plan.isTranscodingVideo {
                 inf += ",VIDEO-RANGE=SDR"
             } else if v.isHDR {

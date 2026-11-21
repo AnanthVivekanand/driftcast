@@ -9,11 +9,11 @@ your Mac on a Chromecast, an Apple TV or an AirPlay 2 TV, and on the Mac itself.
 only what the device can't play, while the video is playing, so nearly any file plays on nearly
 any device without waiting and without quality loss where none is needed.
 
-This document describes version 1.1.2 as of 20 November 2026. It is written from
-the source code, so every statement below corresponds to something the code does. Where a
-feature has not been tried on real hardware, it says so. What changed in version 1.1.1 is
-marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or "since
-1.1.2".
+This document describes version 1.1.3 as of 20 November 2026 (not yet released). It is
+written from the source code, so every statement below corresponds to something the code
+does. Where a feature has not been tried on real hardware, it says so. What changed in
+version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)" or "since
+1.1.2", and what changed in 1.1.3 "(new in 1.1.3)" or "since 1.1.3".
 
 ---
 
@@ -28,8 +28,24 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   separately as "Speakers (audio only)".
 - Plays to **Apple TV** and **AirPlay 2 TVs** (Samsung, LG, Sony, Roku, Vizio, Hisense and
   others) through the system AirPlay picker.
-- Plays on **this Mac** in its own resizable video window with the standard macOS player
-  controls, picture-in-picture and full screen.
+- Plays on **this Mac** in its own resizable video window. Since 1.1.3 the window has
+  Driftcast's own controls in place of the standard macOS ones: a bar that shows while the
+  pointer moves over the picture, with the timeline, Mute, Previous, back and forward 10
+  seconds, Play/Pause, Next and full screen; a double-click on the picture is full screen
+  too. The macOS controls grayed out Rewind and Fast Forward for a video Driftcast is
+  converting as it plays (there is no way to make them skip), had no Next or Previous, and
+  their timeline moved the player without Driftcast knowing, so the next skip could start
+  the video over. What went with them: the speed menu, picture-in-picture, chapters and
+  the share button in that window.
+- **The video window stays in front of the main window** (new in 1.1.3). macOS brings forward
+  only the window that was clicked, so a click on the main window used to cover the video,
+  and a click on the main window with Driftcast behind another app brought the list back and
+  left the video behind. Whenever the main window comes forward the video window is now put
+  just above it, after every click there too; the keyboard stays with the list. When the
+  main window is dragged the video window moves the same distance, so the two stay
+  together (a resize moves nothing). A video window in the Dock, in full screen or on
+  another desktop is left where it is. It is still an ordinary window: it doesn't float
+  over other apps, and can be dragged anywhere by its own title bar.
 - Finds Chromecasts automatically by Bonjour, tells screens from speakers by the device's own
   capability flags, and reconnects after a Wi-Fi dropout (three attempts over about twelve
   seconds), resuming where it was. When five seconds of searching find none, the list says
@@ -92,14 +108,18 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   for 4K) are adjustable; "Always convert video" forces conversion for troubleshooting.
 
 ### Film and show details
-- A **details panel** beside the playlist (toolbar button, ⌘I, or View > Show Details) shows
+- A **details panel** beside the playlist (toolbar button, ⌥⌘I, or View > Show Details, which reads Hide Details while it is open) shows
   the selected or playing video's poster, title, year, running time, age rating, network,
   genres, ratings, director, writers, cast and plot; for an episode, the show's details plus
   the season and episode number, the episode's name (since 1.1.2 on its own line under
-  them, not after a colon), air date, still and synopsis. The main window opens 980 by 670
-  points the first time (620 high before 1.1.2), so that the panel shows an episode through
-  its closed captions notice without scrolling; after that macOS remembers the size. The
-  panel's own header has a button that folds it away (⌥⌘I brings it back). It is a
+  them, not after a colon), air date, still and synopsis. Since 1.1.3 an episode's still
+  sits at the top, above the show's poster, and the panel is open every time Driftcast
+  starts (it can be closed for the session). The main window opens 980 by 746
+  points the first time (670 high in 1.1.2, 620 before), so that the panel shows an
+  episode's still, the show's poster and the title lines under it without scrolling; after
+  that macOS remembers the size. The
+  panel's own header has a button that folds it away (⌥⌘I brings it back; ⌘I, which
+  opened the panel until 1.1.3, now opens the Details window described below). It is a
   fixed-width column inside the window, so opening it never makes the window bigger; the
   playlist gives up the room and the panel scrolls, with a floating arrow at its foot that
   scrolls smoothly to the end (and, from there, back to the top). The panel always has a real
@@ -140,6 +160,33 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   Directors Cut" is Movie (2010)); "Star Wars Episode 4 A New Hope 1977" is a film, not
   episode 4 of a show; "Spider-Man-2" reads "Spider-Man 2"; and a title corrected by hand is
   the name shown everywhere.
+- **A Details window** (new in 1.1.3): Details in a video's right-click menu, or File >
+  Details (⌘I) for the selected video (else the playing one), opens a small window (380 by
+  720 points, resizable, closed with Esc) with everything the details panel shows, held to
+  that video instead of following the selection: poster, title, year, running time, rating,
+  genres, review scores, people, plot, the episode, the file with its streams and how it
+  would be sent, and its closed captions. There is one such window; Details on another video
+  shows that one in it. Until 1.1.3 the command opened the details panel, and with the panel
+  already open on that video it changed nothing. The File section (in the panel too) now
+  also gives how much has been watched, the file's size and the date it was added to its
+  folder.
+- **A name of your own** (new in 1.1.3): three ways turn a video's title into a text box
+  holding the name, selected to type over. Right-click the video and choose Rename. Or, as
+  in the Finder, click the title of the video that is already selected and leave the pointer
+  on it: the box opens about a second after the click, unless a second click (a double-click
+  plays), a key or a move off the title comes first. A click on any other title only selects
+  its row. Or press on any title and hold the mouse button for 0.6 seconds without moving
+  it. Return keeps what
+  was typed; so does clicking elsewhere; Esc leaves the name as it was. The name is shown as
+  typed, with no episode number or year added, in the list, the playback bar, the video
+  window's title, the TV's pause and seek panel (as its one line) and the watched list, and
+  it heads the details panel when nothing was found online. A Chromecast keeps the name it
+  was sent until the video is next started. The name is kept by the file's path, so it is the
+  same in every playlist. It says only what to call the video: the file is not renamed, and
+  details, posters and subtitles are still looked up by the title read from the file name or
+  corrected by hand. Nothing typed, or the name the video has anyway, gives it back the name
+  made from its file. A press with Shift, Command, Option or Control held, a double-click,
+  and a press that moves more than 4 points (a drag) never open the text box.
 - Titles are read from file names: "Heat.1995.1080p.BluRay.x264" is Heat (1995);
   "Sopranos.S1.E11", "Show.S02E05", "Series 3x07" and "Episode 4" are episodes. A result must
   match the title (and the year, when both are known) or it is not shown. "Not this title?
@@ -154,12 +201,12 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   details panel only. The Chromecast shows the poster, with
   the film's year and director or the episode's show, number and name, on its loading and
   pause screens.
-- **A title card when a video starts** (switchable): five seconds of the
+- **A title card when a video starts** (switchable): three seconds (five before 1.1.3) of the
   poster beside the title, year, running time, age rating, genres, director, cast and
   ratings, fading in and out. On this Mac and AirPlay it is a short clip stitched in front
   of the film inside the stream, encoded like the film (same codec, bit depth, frame rate and
   sound channels) because an Apple TV stops where the two differ; a Chromecast instead stays on its own poster-and-title
-  screen for the same five seconds before playing. HDR films that are passed through get
+  screen for the same three seconds before playing. HDR films that are passed through get
   no card, so the TV does not switch picture modes twice.
 - Only the title and year are sent, never the file; results and artwork are cached, the
   services are asked no faster than they allow, and "Look up posters and details online" in
@@ -169,9 +216,13 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - Subtitle tracks inside the file in every text format FFmpeg knows (SRT, ASS/SSA, WebVTT,
   MOV text, MicroDVD, SubViewer, SAMI, and more) are sent to the device as text, not drawn
   into the picture.
-- Subtitle files next to the video are found automatically when their name starts with the
-  video's name (`Movie.srt`, `Movie.en.srt`, `Movie.en.forced.srt`), with the language and
-  "forced" read from the name. Legacy Windows-1252 files are read correctly.
+- Subtitle files next to the video are found automatically when their name is the video's
+  name, or goes on from it with a language, a flag or the video's own extension (`Movie.srt`,
+  `Movie.en.srt`, `Movie.en.forced.srt`, `Movie.mkv.srt`); "Alien" does not take
+  "Aliens.en.srt". The language and "forced" are read from the end of the name. Since 1.1.3
+  a `Subs` or `Subtitles` folder beside the video is searched too: a folder there named
+  after the video, files there named after it, and everything in it when the video is the
+  only one in its folder. Legacy Windows-1252 files are read correctly.
 - **Any text encoding:** subtitle files are read as UTF-8, UTF-16 or UTF-32 (with or without a
   byte-order mark), or in the legacy code page their language used (Cyrillic, Central European,
   Greek, Turkish, Hebrew, Arabic, Vietnamese, Thai, Japanese, Chinese, Korean, Western).
@@ -192,12 +243,25 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   is downloaded, kept with the video and turned on; this takes a few seconds and is tried once
   per video per run.
 - **While casting** the video window shrinks to half its size and shows the video under a gray
-  veil with a big streaming mark and "Connected to <device>, streaming video…". The picture is
+  veil with a big streaming mark and "Connected to <device>". Under that, new in 1.1.3, two
+  short lines say what the file is and what is being done to it: "4K Dolby Vision · HEVC ·
+  Dolby Digital+ 5.1" and then "Playing as is", "Repackaged, no quality loss", "Converting to
+  1080p H.264", "Picture as is, sound converted to AAC Stereo" or "Sound only" (a speaker),
+  with the subtitle that is on after it ("· English subtitles"). A converted picture is named
+  the way a file's is, so a wide film sent as 1920x800 reads 1080p. Until the video has been
+  read the line is "Streaming video…", as it was before. The picture is
   a silent copy that follows the device's position (the poster stands in until it has a
   picture), and the window keeps only play/pause and the timeline, which moves the position on
-  the device. It goes back to its size when playback returns to this Mac.
+  the device. It goes back to its size when playback returns to this Mac. New in 1.1.3: the
+  picture's lower left corner shows where the video is and how long is left, in bold type
+  sized by the window: "14:08 (22m, 14s left)", the time in white and what is left in
+  yellow. What is left is counted to the end credits: the file's credits chapter when it has
+  one, else the last 4% of the video (at least 30 seconds, at most a tenth), the point where a
+  video also counts as finished. Past it the line gives what is left of the file: "(1m, 40s
+  to the end)". An hour or more reads "(1h, 23m, 18s left)". Until the video's length is
+  known only the time is shown.
 - **Video window footer:** a thin bar under the picture reads "Closed Captions: English,
-  Spanish" (or "No closed captions in this video") with the same menu as the playback bar.
+  Spanish" (or "No closed captions"; "in this video" followed it until 1.1.3) with the same menu as the playback bar.
   Since 1.1.2 the bar is shown only for a video that has captions; with none there is no
   bar, and Find Subtitles Online… is in the Subtitles menu and behind the playback bar's
   button.
@@ -233,6 +297,11 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - Any number of named playlists in a sidebar; rename, delete, add videos or folders to each.
 - Drag files or folders into the window, the sidebar, or onto the Dock icon, or use "Open
   With" from the Finder. Folders are searched recursively and sorted the way the Finder sorts.
+  Through 1.1.2, a video opened from the Finder while Driftcast was
+  already running was listed and then the app quit: SwiftUI answers an open by closing a
+  single window and making it again, and closing the main window quits Driftcast. Both
+  windows now decline such events (`handlesExternalEvents(matching: [])` on the scenes) and
+  the app delegate alone takes the files.
 - **Open…** (new in 1.1.2): File > Open… (⌘O), or the folder button beside the playlist's name,
   chooses videos or folders from the Mac, adds them to the playlist and plays the first, as
   opening a video from the Finder does. A video that is already listed plays from its row and
@@ -249,7 +318,10 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   later season lands beside it and not in it. Episodes whose names carry no season number
   (`Episode 4`, names that differ only by a number) stay in one playlist named after the
   show. One episode added on its own stays where it is dropped, since a playlist isn't made
-  for a single video, unless its season already has a playlist, which it then joins. An
+  for a single video, unless its season already has a playlist, which it then joins. Since
+  1.1.3 episodes added to a season that is already listed go to their place in episode
+  order (episodes 1 to 10 added after 11 to 13 come first) for as long as the list is still
+  in file-name order; a list whose rows have been dragged about gets them at the end. An
   empty, untouched playlist that is dropped on becomes the first season's. A
   playlist made by 1.1.1 that is named after the show and holds a single season is renamed
   to that season when more of the show is added; one that mixes seasons is left alone.
@@ -259,6 +331,18 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   there is more to watch, green once the video is finished. A video counts as finished where
   its end credits start; its row then says "Finished" instead of the time left and is faded,
   with a checkmark.
+- **Sort** (new in 1.1.3), in the right-click menu of a video or of the empty space, puts
+  the playlist in order once: By Name (the name each video is shown by, capitals ignored and
+  numbers in counting order, so "E2" comes before "E10"), By Date Added (when each file
+  arrived in its folder, as the Finder's Date Added has it, newest first; a file that can't
+  be found goes last) or Unwatched First (finished videos after the rest). Videos that
+  compare the same keep their order. Nothing stays sorted: videos added later go to the end,
+  and the order is still yours to change by dragging.
+- **Added videos are shown** (new in 1.1.3): after a drop, Add Videos… or Open…, the first
+  video added is selected and the list scrolls to it. When everything dropped was listed
+  already, the first of those rows is selected instead.
+- Under "Nothing playing" the playback bar says "Double-click a video to play it" (it said
+  "Not playing" until 1.1.3, the same thing twice).
 - Resume where you left off (positions saved every five seconds and on quit); "Play from
   Beginning" clears the position; mark videos watched or unwatched by hand.
 - Autoplay of the next video in the playlist; Next and Previous buttons and shortcuts.
@@ -281,6 +365,31 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   Settings > General) is how it comes out. The two files 1.1.1 put in Movies are taken in and
   removed when the app opens; one edited so that it can't all be read is moved into the data
   folder whole instead of being deleted. Out of sight is not locked: the file is plain JSON.
+- **Undo** (new in 1.1.3): Edit > Undo (⌘Z) takes back Remove, Move, Sort, Rename, Add
+  Videos, and New and Delete Playlist, and Redo puts them back.
+- **Missing videos** (new in 1.1.3): a video whose file is gone says so in its row, checked
+  off the main thread so a disk that has stopped answering can't freeze the list, and again
+  when Driftcast comes to the front. Right-click > Locate… points one at its file's new
+  place, keeping its name, subtitles and place in the list (Locate… itself can't be undone,
+  and the steps before it are forgotten); Remove Missing Videos clears the ones that are
+  gone. A video on a disk that is only unplugged is not counted as gone.
+- **Playlists can be reordered** (new in 1.1.3) by dragging them in the sidebar.
+- **A playlist from a drop** (new in 1.1.3): videos dropped between or below the playlists,
+  from the Finder or dragged out of the list, get a playlist of their own where the line
+  was drawn, named after them: the
+  season of a show ("The Sopranos S4" for The.Sopranos.S04E12), the show when they span
+  seasons (then split by season as usual), a film's title, or what their names share. A
+  playlist of that name that is already there takes them instead. Rows dragged from the
+  list onto a playlist move there (Option copies); the drag carries a Driftcast-only type,
+  never the file, so a row dropped on the Finder copies or moves nothing. Which rows a
+  drag holds is noted inside the app as it starts, because macOS would not hand the data
+  back at the drop; and the space below the playlists takes rows as an insert into the
+  sidebar's table, which otherwise claims a row's drag as a reorder of its own and refuses
+  it.
+- **Saved playlists that can't be read** (since 1.1.3) are never replaced: the list starts
+  empty, and the first change moves the unreadable file aside as `library.unreadable.json`
+  before anything is saved. The same goes for corrected titles, typed names and the watched
+  list.
 
 ### Playback controls
 - Transport bar with Previous, back 10 s, Play/Pause, forward 10 s, Next, Stop, audio-track
@@ -300,12 +409,13 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - **Driftcast:** About Driftcast (the full description, requirements, license and website),
   Check for Updates… (also a button in the About window), Settings…
 - **File:** Open… (⌘O) and Add Videos… (⇧⌘O) (new in 1.1.2; before, Add Videos… was ⌘O and
-  there was no Open…), New Playlist (⇧⌘N), Details (⌘I), Show in Finder (⇧⌘R), Export
-  Watched Videos… (new in 1.1.1).
+  there was no Open…), New Playlist (⇧⌘N), Details (⌘I; since 1.1.3 a window of its own,
+  disabled with no video selected or playing), Show in Finder (⇧⌘R), Export Watched Videos…
+  (new in 1.1.1).
 - **View:** Show Details (⌥⌘I), plus the standard sidebar and toolbar items.
 - **Playback:** Play/Pause (⌘P), Stop (⌘.), Skip Forward/Back 10 Seconds (⌥→ / ⌥←), Skip
-  Forward/Back 1 Minute (⌥⇧→ / ⌥⇧←), Next/Previous Video (⇧⌘→ / ⇧⌘←), Volume Up/Down (↑ / ↓),
-  Audio Track submenu, Volume Booster, Downmix to Stereo, Audio Delay (⌥⌘] later, ⌥⌘[
+  Forward/Back 1 Minute (⌥⇧→ / ⌥⇧←), Next/Previous Video (⇧⌘→ / ⇧⌘←), Volume Up/Down (⌘↑ / ⌘↓),
+  Mute (since 1.1.3; it follows a TV muted with its own remote), Audio Track submenu, Volume Booster, Downmix to Stereo, Audio Delay (⌥⌘] later, ⌥⌘[
   earlier, Reset).
 - **Output:** This Mac, Apple TV or AirPlay TV…, every Chromecast found (speakers in a
   submenu), Disconnect from Chromecast, Search for Devices Again.
@@ -316,8 +426,10 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 - **Help:** Driftcast Help, Report a Problem…, Driftcast on GitHub,
   Driftcast Website, Show Error Log (new in 1.1.1).
 - **Right-click on a video:** Play / Resume from 12:34 / Pause / Stop, Play from Beginning, Add
-  Subtitle File…, Find Subtitles Online…, Details, Show in Finder, Mark as Watched /
-  Unwatched, Move to Playlist (any playlist or a new one), Add Videos…, Remove from Playlist,
+  Subtitle File…, Find Subtitles Online…, Details (the Details window), Rename (with one
+  video clicked; new in 1.1.3), Show in Finder, Mark as Watched / Unwatched, Move to Playlist
+  (any playlist or a new one), Select All, Sort (new in 1.1.3), Add Videos…, Remove from
+  Playlist,
   Delete File… (asks "Do you really want to delete this file?", then moves the file to the
   Trash, stops it if it is playing, and takes it out of every playlist; the only command in
   the app that touches a file on disk). New in 1.1.1: a file listed twice is moved once, and a
@@ -337,12 +449,15 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   list.
 
 ### Settings
-- **General:** resume where you left off; play the next video automatically; keep a list of
+- **General:** resume where you left off (the next video always plays on; until 1.1.3 that
+  was a switch here); keep a list of
   the videos you watch, with Show in Finder (new in 1.1.1; since 1.1.2 the button is
   Export…); look up posters
-  and details online, OMDb API key, show the poster and details for five seconds when a video starts;
-  which ffmpeg to use (the built-in copy, or a folder of your
-  own); check for updates automatically, last check, Check Now.
+  and details online, OMDb API key, show poster when a movie starts (the title card, three seconds);
+  check for updates automatically, last check, Check Now. Until 1.1.3 it also chose which
+  ffmpeg to use (the built-in copy, or a folder of your own); a folder chosen then is still
+  used. Since 1.1.3 the Settings panes carry no explanatory paragraphs under the poster
+  switch, "I don't care about subtitles" or the picture-subtitle settings.
 - **Video:** convert on the GPU (VideoToolbox); conversion quality; maximum resolution; always convert; HEVC
   on Chromecast (automatic by model, always, never).
 - **Audio:** preferred audio language; surround conversion for Apple devices (Dolby Digital
@@ -383,7 +498,9 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   for, at launch. Help > Show Error Log shows the
   file in the Finder. Past 512 KB the older half is dropped.
 - The details panel's File section shows a file's streams and, for the current output
-  device, exactly what would be passed through, converted or drawn in, and why.
+  device, exactly what would be passed through, converted or drawn in, and why. Since
+  1.1.3 Container is one name, chosen by the file's extension ("MP4"), where it used to
+  list the whole family ffprobe's reader covers ("mov,mp4,m4a,3gp,3g2,mj2").
 - The audio adjustments popover shows the same "Stream" notes for the playing video.
 
 ---
@@ -533,9 +650,15 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   and closes the connection.
 - **Reconnection:** a dropped connection is retried three times (2, 4 and 6 seconds apart),
   the session rejoined and the video reloaded at its position.
+- **Since 1.1.3** only Driftcast's own media session on the TV is followed, so another
+  phone casting to the same TV is not taken for Driftcast's video; the volume slider follows
+  the TV's own volume and mute; playback stopped by voice or from another device is noticed;
+  and a dropped connection shows "Reconnecting to …" in the bar and rejoins the playing
+  video where it was, paused if it was paused, without relaunching the player on the TV.
 - **Not yet verified on hardware.** No Chromecast was available during development. The
   implementation follows Google's documentation and the pychromecast and node-castv2
   projects, and the playlist attributes Google's player documents as required are present.
+  That includes all of the 1.1.3 changes above.
 
 ---
 
@@ -590,13 +713,26 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   fixer and cached in Application Support/Driftcast/OCR keyed by file, modification date and
   track. Without OCR (or for DVB/XSUB), the subtitle is overlaid onto the video during
   conversion.
+- Since 1.1.3 the MKV reader keeps every element inside its parent and the file (a file
+  still being written, or a damaged one, ends the reading instead of looping), reads tracks
+  packed with zlib or header stripping (bzip2, LZO and encrypted ones are burned in), and
+  reads only the track that was chosen. The pictures go through Vision's older request
+  (`VNRecognizeTextRequest`): macOS 15's newer one crashed inside Vision when several
+  pictures were read at once on macOS 26.2, and was about three times slower one at a time.
+  One reading uses Vision at a time; it reports its progress, stops when the video is
+  stopped, and a track that failed is not tried again until the next launch. "Read Subtitles
+  Again" in the subtitles menu throws the kept text away and reads the pictures again.
 - Languages: three-letter container codes are mapped to two-letter codes and localized names;
   a file suffix is treated as a language only when the system knows a name for it, so
   `Up.srt` isn't "language up".
 - OpenSubtitles: REST API v1 with the app's or your key; search parameters sorted and
   lower-cased as the API requires; the 64-bit movie hash (file size plus word sums of the first
   and last 64 KiB) finds exact releases; downloads land in Application
-  Support/Driftcast/Subtitles as `Title.lang.id.srt` and are attached to the video.
+  Support/Driftcast/Subtitles as `Title.lang.id.srt` (`Title.lang.forced.id.srt` for one that
+  covers only the foreign-language lines) and are attached to the video. A file already
+  downloaded is used again. Portuguese, Chinese and Norwegian are asked for as `pt-br,pt-pt`,
+  `zh-cn,zh-tw` and `no`. Forced-only results are listed last and marked, and the automatic
+  search never picks one.
 
 ---
 
@@ -607,7 +743,8 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
   updated), the set of watched paths and the selected playlist. Writes are coalesced (0.5 s)
   and forced on quit. Since 1.1.2 they go through one queue, so they land in the order they
   were made and the write at quit waits for one already under way; a write that fails goes to
-  the error log.
+  the error log. Reading the file at launch writes nothing; until 1.1.3 it scheduled a save
+  of the list just read.
 - **One copy at a time** (new in 1.1.2): every write replaces the whole file with the list
   the running copy holds, so two copies open together each erased what the other had added.
   That happens without anyone meaning it: macOS opens a double-clicked video with the newest
@@ -650,6 +787,7 @@ marked "(new in 1.1.1)", and what changed in 1.1.2 is marked "(new in 1.1.2)" or
 | `~/Library/Caches/Driftcast/Keyframes/` | keyframe indexes for copied video |
 | `~/Library/Caches/Driftcast/Metadata/`, `Artwork/` | film and show details and their posters |
 | `~/Library/Application Support/Driftcast/title-overrides.json` | titles corrected by hand |
+| `~/Library/Application Support/Driftcast/title-names.json` | names typed in the list with Rename (new in 1.1.3) |
 | `~/Library/Application Support/Driftcast/watched-videos.json` | the list of videos played (since 1.1.2; in 1.1.1 it is `~/Movies/Videos I have watched on Driftcast.txt` and `.json`) |
 | `~/Library/Logs/Driftcast/Errors.log` | the error log (new in 1.1.1) |
 | `$TMPDIR/DriftcastStreams/<pid>/<session>/` | HLS segments while a video plays; removed when it stops and at quit; folders of copies that are no longer running are cleaned at launch |
@@ -681,7 +819,7 @@ local-network permission.
   Mac, using FFmpeg's Intel build; no real Intel Mac has been used. If an Intel GPU refuses part
   of the GPU route, the conversion steps down by itself.
 - **Dolby Vision profile 5 converted to H.264** can't be accurate (no tool here reshapes it),
-  and the note in the stream details says so. Passed through, it is labelled correctly.
+  and the note in the stream details says so. Passed through, it is labeled correctly.
 - No spatial audio virtualization, no phone remote, no network speed test.
 - Dolby Vision is passed through as HEVC to devices that report HDR support; whether a given
   TV shows the Dolby Vision layer or only the HDR10 base layer depends on the TV, and
@@ -693,6 +831,45 @@ local-network permission.
   was left alone and the new one quit. It has not been tried by double-clicking a video in
   the Finder with two real copies installed, and a copy older than 1.1.2 opened second is
   not stopped.
+- **What was added for 1.1.3** (20 November 2026). The logic harness (656 checks) covers the
+  names, the orders, the time left, playlists and their saved files, missing videos, where
+  later episodes go, the updater, the subtitle readers and the Chromecast messages. The rest
+  was tried on screen on macOS 26.2, in a separate copy of the app driven with posted mouse
+  and key events:
+  - Rename from the menu, by a press held on a title, and by a click on the selected title
+    and a wait; that a first click, a double-click, a click followed by a key or by moving
+    off the title, open no text box.
+  - ⌘ with an arrow in the title box; the arrow keys after Return; Space starting the
+    selected video with nothing playing.
+  - The video window opening beside the main window in the video's shape, staying in front
+    after a click on the main window, keeping its shape when resized, and coming back where
+    it was.
+  - Files dragged in from another program onto a row of the list, onto the empty part of
+    the list and onto playlists in the sidebar, given as paths and as file references;
+    two earlier episodes dropped on a season of three going in ahead of them.
+  - A row of the list dragged, by its title and from beside it, to a new place in the list,
+    onto a playlist (it moved there) and below the playlists (a film made a playlist of its
+    name); a file from another program dropped below the playlists and onto one.
+  - The video window's own bar: its seven controls are there, and forward 10 seconds moved
+    the clock by ten; the window moving with the main window, staying in front after clicks
+    in it, and coming back from the Dock in front.
+  - A playlist dragged to a new place in the sidebar; Undo and Redo of a drop and of Remove
+    Missing Videos; Mute from the Playback menu; a video whose file was taken away saying
+    "File not found" and offering Locate… and Remove Missing Videos.
+- **Not tried for 1.1.3:** a drag from the Finder itself (a stand-in program supplied the
+  files); several rows dragged at once to the sidebar; full screen from the video
+  window's bar, a double-click or the green button; Space with the keyboard in the video
+  window; when the bar shows and hides; Next and Previous selecting their row; an
+  episode's still above the poster on screen; Locate…'s file panel; a drag of the video window by its title bar (posted events
+  don't move a window on macOS 26); the Details window on screen (its view was drawn off
+  screen and looked at); the time label and the details lines while casting (the wording
+  is checked by the harness, and the layout was drawn off screen at two window sizes and
+  looked at); anything on a Chromecast or AirPlay
+  device; the subtitle search sheet's forced mark and downloads-left line, and the
+  OpenSubtitles requests behind them, against the real service; Read Subtitles Again and
+  the OCR progress in the bar on a real disc rip; mkvmerge and MakeMKV files (compressed
+  tracks were tested with files built by the tests). Undo belongs to the main window: with
+  the keyboard in the video window, ⌘Z does not reach the list.
 
 ---
 

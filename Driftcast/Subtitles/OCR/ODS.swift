@@ -8,30 +8,48 @@
 
 import Foundation
 
+/// One PGS object (a subtitle picture), possibly sent in several fragments.
 struct ODS {
     // MARK: - Properties
 
     private(set) var objectWidth: Int = 0
     private(set) var objectHeight: Int = 0
+    /// Set by the fragment that carries the "last in sequence" flag.
+    private(set) var isComplete = false
     private var encodedImageData: Data = .init()
 
     // MARK: - Lifecycle
 
+    // ODS structure (simplified), from the segment's data:
+    //   2 bytes: Object ID (read by the caller)
+    //   1 byte: Version number (unused by us)
+    //   1 byte: Sequence flag (0x80: first fragment, 0x40: last fragment; both in a one-fragment object)
+    //   First fragment only:
+    //     3 bytes: Object data length (unused by us)
+    //     2 bytes: Object width
+    //     2 bytes: Object height
+    //   Rest: Image data (run-length encoded, RLE)
+
+    /// The first fragment of an object.
     init(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
-        try ODS.validate(buffer, offset, segmentLength)
-        try parseODS(buffer, offset, segmentLength)
-    }
-
-    mutating func appendSegment(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
-        try ODS.validate(buffer, offset, segmentLength)
-        try parseODS(buffer, offset, segmentLength)
-    }
-
-    /// A segment must carry a full header and lie entirely inside the buffer, otherwise `parseODS`
-    /// reads past the end of the stream.
-    private static func validate(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
-        guard segmentLength > 11, offset >= 0, offset + segmentLength <= buffer.count else {
+        guard segmentLength >= 11, offset >= 0, offset + segmentLength <= buffer.count else {
             throw macSubtitleOCRError.invalidODSDataLength(length: segmentLength)
+        }
+        objectWidth = Int(buffer[offset + 7]) << 8 | Int(buffer[offset + 8])
+        objectHeight = Int(buffer[offset + 9]) << 8 | Int(buffer[offset + 10])
+        encodedImageData.append(contentsOf: buffer[(offset + 11) ..< (offset + segmentLength)])
+        isComplete = buffer[offset + 3] & 0x40 != 0
+    }
+
+    /// A later fragment of the same object. Only the first carries a size; a middle fragment (flag
+    /// 0x00) used to be read as a first one, its image bytes taken for a width and height.
+    mutating func appendSegment(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
+        guard segmentLength >= 4, offset >= 0, offset + segmentLength <= buffer.count else {
+            throw macSubtitleOCRError.invalidODSDataLength(length: segmentLength)
+        }
+        encodedImageData.append(contentsOf: buffer[(offset + 4) ..< (offset + segmentLength)])
+        if buffer[offset + 3] & 0x40 != 0 {
+            isComplete = true
         }
     }
 
@@ -39,32 +57,5 @@ struct ODS {
     func decodeRLEData() throws -> Data {
         let rleImageData = RLEData(data: encodedImageData, width: objectWidth, height: objectHeight)
         return try rleImageData.decodePGS()
-    }
-
-    // MARK: - Methods
-
-    // Parses the Object Definition Segment (ODS) to extract the subtitle image bitmap.
-    // ODS structure (simplified):
-    //   0x15: Segment Type; already checked by the caller
-    //   2 bytes: Object ID (unused by us)
-    //   1 byte: Version number (unused by us)
-    //   1 byte: Sequence flag (0x80: First in sequence, 0x40: Last in sequence,
-    //                          0xC0: First and last in sequence (0x40 | 0x80))
-    //   3 bytes: Object data length (unused by us)
-    //   2 bytes: Object width
-    //   2 bytes: Object height
-    //   Rest: Image data (run-length encoded, RLE)
-    private mutating func parseODS(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
-        let sequenceFlag = buffer[offset + 3]
-
-        // Only update object dimensions if this is the first part of the sequence
-        if sequenceFlag != 0x40 {
-            objectWidth = Int(buffer.loadUnaligned(fromByteOffset: offset + 7, as: UInt16.self).bigEndian)
-            objectHeight = Int(buffer.loadUnaligned(fromByteOffset: offset + 9, as: UInt16.self).bigEndian)
-        }
-
-        // Append image data to the encoded image data buffer
-        let dataOffset = sequenceFlag == 0x40 ? offset + 4 : offset + 11
-        encodedImageData.append(contentsOf: buffer[dataOffset ..< (offset + segmentLength)])
     }
 }

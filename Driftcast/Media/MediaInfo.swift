@@ -27,7 +27,7 @@ struct MediaInfo: Hashable, Sendable {
         var isInterlaced: Bool { ["tt", "bb", "tb", "bt"].contains(fieldOrder ?? "") }
 
         /// Profile 5 has no HDR10 or SDR base layer: shown without Dolby Vision it comes out
-        /// green and purple, so it has to be labelled for what it is.
+        /// green and purple, so it has to be labeled for what it is.
         var needsDolbyVisionTag: Bool { codec == "hevc" && dolbyVisionProfile != nil && dolbyVisionCompatibility == 0 }
 
         var bitDepth: Int {
@@ -38,14 +38,17 @@ struct MediaInfo: Hashable, Sendable {
 
         var isHDR: Bool { colorTransfer == "smpte2084" || colorTransfer == "arib-std-b67" || isDolbyVision }
 
+        /// Named by the short side, so a phone's 1080x1920 portrait video is 1080p, not 1440p;
+        /// a wide film counts its width as if it were 16:9.
         var resolutionName: String {
-            switch max(height, width * 9 / 16) {
+            let long = max(width, height), short = min(width, height) > 0 ? min(width, height) : long
+            switch max(short, long * 9 / 16) {
             case 2000...: return "4K"
             case 1300...: return "1440p"
             case 1000...: return "1080p"
             case 700...: return "720p"
             case 560...: return "576p"
-            case 1..<560: return "\(height)p"
+            case 1..<560: return "\(short)p"
             default: return "\(width)x\(height)"
             }
         }
@@ -117,6 +120,37 @@ struct MediaInfo: Hashable, Sendable {
     /// Where the end credits start, from the file's own chapter list ("End Credits",
     /// "Abspann"), counted from the start of the film. Most files don't mark them.
     var creditsStart: Double? = nil
+
+    /// The file's container by name: one, not ffprobe's list of every format its reader
+    /// covers ("mov,mp4,m4a,3gp,3g2,mj2", the user's report, 2026-11-20). Where one reader
+    /// covers several, the file's extension says which this is; a file whose extension
+    /// doesn't belong to the reader that opened it is named by the reader.
+    static func containerName(formatName: String, file: URL) -> String {
+        let ext = file.pathExtension.lowercased()
+        let names: [String: String] = [
+            "mp4": "MP4", "m4v": "MP4 (M4V)", "m4a": "MP4 audio (M4A)", "mov": "QuickTime (MOV)",
+            "3gp": "3GP", "3g2": "3G2", "mj2": "Motion JPEG 2000",
+            "mkv": "Matroska (MKV)", "mk3d": "Matroska 3D", "mka": "Matroska audio", "webm": "WebM",
+            "avi": "AVI", "divx": "DivX (AVI)", "ts": "MPEG transport stream", "m2ts": "Blu-ray (M2TS)",
+            "mts": "AVCHD (MTS)", "mpg": "MPEG", "mpeg": "MPEG", "vob": "DVD (VOB)", "wmv": "Windows Media",
+            "asf": "Windows Media (ASF)", "flv": "Flash Video", "ogv": "Ogg", "ogg": "Ogg", "ogm": "Ogg",
+            "mxf": "MXF", "dv": "DV", "rm": "RealMedia", "rmvb": "RealMedia", "mp3": "MP3", "flac": "FLAC",
+            "wav": "WAV", "aac": "AAC", "opus": "Opus",
+        ]
+        let readerOf: [String: String] = [
+            "mp4": "mov", "m4v": "mov", "m4a": "mov", "mov": "mov", "3gp": "mov", "3g2": "mov", "mj2": "mov",
+            "mkv": "matroska", "mk3d": "matroska", "mka": "matroska", "webm": "matroska",
+            "ts": "mpegts", "m2ts": "mpegts", "mts": "mpegts", "wmv": "asf", "asf": "asf",
+            "ogv": "ogg", "ogg": "ogg", "ogm": "ogg", "mpg": "mpeg", "mpeg": "mpeg", "vob": "mpeg",
+            "rm": "rm", "rmvb": "rm", "avi": "avi", "divx": "avi", "wav": "wav",
+        ]
+        let family = formatName.split(separator: ",").map(String.init)
+        guard let first = family.first else { return names[ext] ?? "Unknown" }
+        if family.contains(readerOf[ext] ?? ext) { return names[ext] ?? ext.uppercased() }
+        let readers: [String: String] = ["matroska": "Matroska (MKV)", "mov": "QuickTime (MOV)", "mpegts": "MPEG transport stream",
+                                         "avi": "AVI", "asf": "Windows Media (ASF)", "ogg": "Ogg", "flv": "Flash Video", "mpeg": "MPEG"]
+        return readers[first] ?? first.uppercased()
+    }
 
     var summary: String {
         var parts: [String] = []
@@ -199,25 +233,56 @@ enum Codecs {
 actor MediaProbe {
     static let shared = MediaProbe()
 
-    private var cache: [URL: MediaInfo] = [:]
+    /// What identifies one version of a file: a recording still growing, or a file replaced
+    /// under the same name while Driftcast is open, is probed again.
+    struct Stamp: Hashable, Sendable {
+        var modified: Date?
+        var size: Int64?
+
+        init(_ url: URL) {
+            // Read afresh each time: a URL keeps the resource values it read once.
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            modified = attributes?[.modificationDate] as? Date
+            size = (attributes?[.size] as? NSNumber)?.int64Value
+        }
+    }
+
+    /// Longest a probe may take. Reading a file's header takes a second or two even on a
+    /// network disk; one that has stopped answering would otherwise hold a slot for good, and
+    /// four of them stopped every probe after, the one playback waits on included.
+    static let probeTimeout = 45.0
+    /// Counting every packet of a file reads all of it, so this one may take longer.
+    static let countTimeout = 300.0
+
+    private var cache: [URL: (stamp: Stamp, info: MediaInfo)] = [:]
     private var inFlight: [URL: Task<MediaInfo, Error>] = [:]
     private let limiter = AsyncLimiter(4)
 
-    func cached(_ url: URL) -> MediaInfo? { cache[url] }
+    func cached(_ url: URL) -> MediaInfo? { cache[url]?.info }
 
-    func probe(_ url: URL) async throws -> MediaInfo {
-        if let info = cache[url] { return info }
+    /// Not isolated: reading the file's date and size can block on a slow disk, and that must
+    /// not hold up probes of other files.
+    nonisolated func probe(_ url: URL) async throws -> MediaInfo {
+        try await probe(url, stamp: Stamp(url))
+    }
+
+    private func probe(_ url: URL, stamp: Stamp) async throws -> MediaInfo {
+        if let entry = cache[url], entry.stamp == stamp { return entry.info }
         if let task = inFlight[url] { return try await task.value }
         let limiter = self.limiter
         let task = Task<MediaInfo, Error> {
             guard let exe = FFmpeg.ffprobe else { throw FFmpegError.notFound }
             await limiter.acquire()
             do {
-                let data = try await FFmpeg.run(exe, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", url.path])
+                let data = try await FFmpeg.run(exe, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", url.path],
+                                                timeout: Self.probeTimeout)
                 var info = try Self.parse(data)
                 if info.duration <= 0, let v = info.video { info.duration = await Self.measureDuration(exe, url, video: v) }
                 await limiter.release()
                 return info
+            } catch is FFmpeg.TimedOut {
+                await limiter.release()
+                throw FFmpegError.failed("\(url.lastPathComponent) didn't answer within \(Int(Self.probeTimeout)) seconds. If it is on a network or external disk, check that the disk is connected and awake.")
             } catch {
                 await limiter.release()
                 throw error
@@ -226,7 +291,7 @@ actor MediaProbe {
         inFlight[url] = task
         defer { inFlight[url] = nil }
         let info = try await task.value
-        cache[url] = info
+        cache[url] = (stamp, info)
         return info
     }
 
@@ -234,7 +299,8 @@ actor MediaProbe {
     /// counts the video's packets. Zero when that doesn't work either.
     private static func measureDuration(_ exe: URL, _ url: URL, video: MediaInfo.Video) async -> Double {
         guard video.fps > 0, let data = try? await FFmpeg.run(exe, ["-v", "error", "-select_streams", "\(video.index)", "-count_packets",
-                                                                    "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", url.path]) else { return 0 }
+                                                                    "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", url.path],
+                                                              timeout: countTimeout) else { return 0 }
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: ",\n "))
         return Double(text).map { $0 / video.fps } ?? 0
     }

@@ -16,6 +16,8 @@ struct SubtitleSearchView: View {
     @State private var needsKey = false
     @State private var keyProblem: String?
     @State private var keyHelp = false
+    /// The search or download under way, so Cancel can stop it.
+    @State private var work: Task<Void, Never>?
 
     private var typedKey: Bool { !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -35,6 +37,11 @@ struct SubtitleSearchView: View {
                     ForEach(Lang.common, id: \.self) { code in
                         Text(Lang.name(code) ?? code).tag(code)
                     }
+                    // The Mac's own language may not be in the list (Norwegian is "nb", or Czech);
+                    // without its row the pop-up showed nothing at all.
+                    if !Lang.common.contains(language), !language.isEmpty {
+                        Text(Lang.name(language) ?? language).tag(language)
+                    }
                 }
                 .labelsHidden()
                 .frame(width: 140)
@@ -47,8 +54,11 @@ struct SubtitleSearchView: View {
                 if busy { ProgressView().controlSize(.small) }
                 if let message { Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") {
+                    work?.cancel()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
                 // Only once there is something to use; a button that can't do anything yet is just confusing.
                 if !needsKey, !results.isEmpty {
                     Button("Use") { download() }
@@ -67,6 +77,10 @@ struct SubtitleSearchView: View {
             needsKey = !OpenSubtitlesClient.hasKey
             if !needsKey { search() }
         }
+        // The sheet is for the video it was opened for. When another one takes its place (the next
+        // episode starts, or the details panel follows playback), its title and results no longer
+        // fit, and Use would save this video's subtitle under the other's name and turn it on there.
+        .onChange(of: item.url) { _ in dismiss() }
     }
 
     /// Takes the place of the results while there is no key: OpenSubtitles answers nothing
@@ -110,6 +124,7 @@ struct SubtitleSearchView: View {
             TableColumn("Release") { r in
                 HStack(spacing: 6) {
                     if r.isMatch { MatchTag(exact: r.hashMatch) }
+                    if r.foreignPartsOnly { ForcedTag() }
                     Text(r.name)
                         .fontWeight(r.isMatch ? .semibold : .regular)
                         .lineLimit(1)
@@ -135,11 +150,19 @@ struct SubtitleSearchView: View {
         search()
     }
 
+    /// What the last download said about the day's allowance, for the line under the results.
+    private var quotaNote: String? {
+        guard let quota = OpenSubtitlesClient.quota else { return nil }
+        return quota.remaining == 1 ? "1 download left today." : "\(quota.remaining) downloads left today."
+    }
+
     private func search() {
+        // Return pressed twice would run two searches, and the slower one would win.
+        guard !busy else { return }
         let q = query, lang = language
         busy = true
         message = nil
-        Task {
+        work = Task {
             defer { busy = false }
             do {
                 let client = try OpenSubtitlesClient.fromSettings()
@@ -156,12 +179,14 @@ struct SubtitleSearchView: View {
                 let matches = found.filter(\.isMatch).count
                 let count = matches > 0 ? "\(found.count) found, \(matches) made for this video." : "\(found.count) found."
                 message = found.isEmpty ? "No subtitles found." : "\(count) Double-click one, or select it and click Use."
+                if let quotaNote, let shown = message { message = "\(shown) \(quotaNote)" }
             } catch let failure as OpenSubtitlesClient.Failure where failure.isKeyRefused {
                 // Back to the box, saying why, rather than an error down here with nowhere to act on it.
                 results = []
                 needsKey = true
                 keyProblem = "OpenSubtitles didn't accept that key. Check it and try again."
             } catch {
+                guard !Task.isCancelled else { return }
                 ErrorLog.record("Subtitle search", item.url.lastPathComponent, error: error)
                 message = error.localizedDescription
             }
@@ -169,21 +194,41 @@ struct SubtitleSearchView: View {
     }
 
     private func download() {
-        guard let id = selection, let result = results.first(where: { $0.id == id }) else { return }
+        // A second double-click while the first downloads would spend another of the day's downloads.
+        guard !busy, let id = selection, let result = results.first(where: { $0.id == id }) else { return }
         busy = true
         message = "Downloading…"
-        Task {
+        work = Task {
             defer { busy = false }
             do {
                 let client = try OpenSubtitlesClient.fromSettings()
                 let file = try await client.download(result, for: item.url)
+                // Canceled while it downloaded: the file is kept (choosing it again won't download it
+                // twice) but it isn't attached or turned on, and the video doesn't reload.
+                guard !Task.isCancelled else { return }
                 player.addSubtitleFile(file, to: item)
                 dismiss()
             } catch {
+                guard !Task.isCancelled else { return }
                 ErrorLog.record("Subtitle download", item.url.lastPathComponent, error: error)
                 message = error.localizedDescription
             }
         }
+    }
+}
+
+/// The gray "FORCED" beside a subtitle that covers only the parts in another language (signs and
+/// foreign dialogue), not the whole film.
+private struct ForcedTag: View {
+    var body: some View {
+        Text("FORCED")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.secondary.opacity(0.18)))
+            .fixedSize()
+            .help("Only the parts in another language, such as signs and foreign dialogue, not the whole film.")
     }
 }
 

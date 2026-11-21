@@ -3,85 +3,56 @@
 What is new and what was fixed in each version, newest first. Downloads and the notes for
 earlier versions are on the [releases page](https://github.com/leechsoftware/driftcast/releases).
 
+## 1.1.3 (21 November 2026)
+
+### New
+
+- **Drag videos** onto a playlist to move them, or below the playlists for a new one named after the show or film.
+- **Rename videos,** reorder playlists, and undo most changes with ⌘Z.
+- **The video window** has its own controls, with Next, Previous and working 10-second skips, and moves with the main window.
+- **While casting,** the video window shows the time left and what is being done to the video.
+- **A Details window** (⌘I), and **Locate…** for a video whose file was moved.
+- **Mute,** from the bar or the Playback menu.
+
+### Changed
+
+- **The next video always plays,** and Next and Previous select it in the list.
+- **The details panel** is open at launch, with an episode's screenshot above the poster.
+- **Settings** are shorter.
+
+### Fixes
+
+- Opening a video from the Finder while Driftcast was running quit the app.
+- A playlist file that couldn't be read could be replaced by an empty one.
+- Picture subtitles could crash Driftcast; their OCR is now faster and shows its progress.
+- A dropped Chromecast connection now rejoins the video, and wide films fit a 1080p Chromecast.
+- The Chromecast's volume now follows the TV's own.
+
 ## 1.1.2 (20 November 2026)
 
 ### New
 
-- **Open…:** there was no command called Open, and nothing in the window that looked like
-  opening a file. Videos came in through Add Videos… (⌘O) and a + button, and those only
-  listed a video: it still had to be found in the list and played. File > Open… (⌘O) and a
-  folder button beside the playlist's name now choose a video from your Mac, add it to the
-  playlist and play it, as opening a video from the Finder always has. Several videos or a
-  folder are added and the first one plays. A video that is already listed plays from its row
-  and isn't listed twice.
-- **Add Videos…** stays, for lining videos up without interrupting what is playing: the +
-  button beside the folder, and ⇧⌘O in the File menu (it was ⌘O).
-- **Select All:** ⌘A selected the videos only after a click in the list; after a click in the
-  sidebar it did nothing. It now selects every video in the playlist wherever the keyboard is
-  in the main window, and Select All is in the right-click menus. While you are typing a name
-  it still selects the text.
-- **Right-click in the list of playlists:** New Playlist and Delete Playlist now come first,
-  above Rename and Add Videos…, and the menu opens wherever on the row you click. A
-  right-click in the empty space under the playlists offers New Playlist. Before, the menu
-  had no New Playlist, and nothing came up in the empty space.
+- **Open…** (⌘O, or the folder button) adds a video to the playlist and plays it.
+- **Add Videos…** (⇧⌘O, or the + button) lists videos without playing them.
+- **Select All** (⌘A) works wherever the keyboard is in the main window.
+- **Right-click a playlist** for New Playlist and Delete Playlist, anywhere on its row or below the list.
 
 ### Changed
 
-- **A playlist for each season:** dropping or opening episodes of a show put them all in one
-  playlist named after the show, every season together. Each season now gets its own:
-  "Sopranos S1", "Sopranos S2", in episode order. One episode added on its own stays where
-  you drop it, unless its season already has a playlist, which it joins. A playlist you
-  already have that is named after the show and holds one season takes that season's name
-  the next time you add to the show; one that mixes seasons is left as it is.
-- **The list of videos you watch is out of sight:** 1.1.1 kept it as two files in your Movies
-  folder, where anyone looking through the folder could read what was watched. It is now kept
-  inside Driftcast's own data, and Export Watched Videos… (the File menu, or the Export…
-  button in Settings > General) is how you get it, as a spreadsheet. The two files in Movies
-  are taken in and removed the first time this version opens, and nothing in them is lost.
-  The list is hidden, not locked: someone who knows where an app keeps its data can open it.
-- **"I don't care about subtitles"** is now the first setting in Settings > Subtitles, and it
-  means what it says. It used to hide the notices only: with "Always turn on closed captions"
-  ticked as well, captions still came on. Now captions never come on by themselves and none
-  are searched for as a video starts, and the other subtitle settings are grayed out, titles
-  included, until you turn it off. They keep their values, and the Subtitles menu still works
-  for a single video. It is still off unless you turn it on.
-- **No caption bar for a video without captions:** the bar under the video said "No closed
-  captions in this video" and took room from the picture to say it. It now shows only when
-  the video has captions to choose from. Find Subtitles Online… is still in the Subtitles
-  menu and behind the playback bar's button.
-- **An episode's name on its own line:** the details panel wrote "Season 4, Episode 7:
-  Watching Too Much Television" as one line, which broke in the middle of the name. The name
-  is now under the season and episode.
-- **The year in place of the score on each row:** a video's row in the playlist ended with a
-  review score and where it came from ("TVmaze 8.8", "IMDb 8.3"). It now shows the year: a
-  film's year, and for an episode the year it was first shown. Scores are still in the
-  details panel.
-- **A taller window the first time Driftcast opens:** tall enough that the details panel
-  shows an episode through its closed captions notice without scrolling. A window you have
-  already sized keeps its size.
+- **A playlist for each season:** a show's episodes go to "Sopranos S1", "Sopranos S2", in order.
+- **The watched list is out of sight,** inside Driftcast's own data; Export Watched Videos… saves it as a spreadsheet.
+- **"I don't care about subtitles"** now stops captions coming on and being searched for, not only the notices.
+- **No caption bar** under a video that has no captions.
+- **An episode's name** has its own line in the details panel.
+- **Rows show the year** in place of the review score.
+- **A taller window** the first time Driftcast opens.
 
 ### Fixed
 
-- **Videos added to a playlist could vanish when two copies of Driftcast were open:** macOS
-  opens a double-clicked video with the newest copy of Driftcast it knows of, even while an
-  older copy from another folder is already running: one in Applications and one in
-  Downloads, say, or one still on its disk image. The two windows look the same. Each copy
-  kept its own list and saved the whole of it, so each save erased what the other had added,
-  and videos just dropped into one window were missing from the other and gone at the next
-  launch. Only one copy runs now: the one being opened asks the other to save and quit, waits
-  for it, and then reads the playlists and opens what was double-clicked. Versions before
-  1.1.2 don't do this, so throw older copies away: one opened after 1.1.2 still runs beside
-  it. If playlists are ever overwritten that way, the error log now says so.
-- **Saving the playlists:** saves are written one at a time in the order they were made, so
-  an earlier list can't land on top of a later one as Driftcast quits. A save that fails is
-  written to the error log; it used to pass without a word.
-- **The caption bar under the video was cut off:** the video window could be made, or come
-  back, short enough that the bar saying which captions a video has lost its lower half. The
-  window's smallest size didn't count its title bar. It does now, and a window that is too
-  short grows to show the whole bar. The same miscount brought the window back shorter by the
-  title bar's height each time casting ended.
-- **A folder opened twice from the Finder:** when the folder was reached through a link, the
-  second time played nothing. It plays the folder's first video from the list.
+- **Videos could vanish from a playlist** with two copies of Driftcast open; only one copy runs now.
+- **Saving the playlists:** saves land in order and a failed save is logged.
+- **The caption bar** is no longer cut off in a short window.
+- **A folder opened twice** from the Finder plays its first video.
 
 ## 1.1.1 (19 November 2026)
 

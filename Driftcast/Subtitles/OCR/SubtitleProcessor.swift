@@ -83,10 +83,15 @@ struct SubtitleProcessor {
         self.maxConcurrentTasks = maxConcurrentTasks
     }
 
-    func process() async throws -> macSubtitleOCRResult {
+    /// Reads every subtitle's picture. `progress` is told how many are done out of how many, after each
+    /// one. Canceling the calling task stops the work between pictures and throws `CancellationError`,
+    /// so switching to another video doesn't leave the rest of a film being read in the background.
+    func process(progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) async throws -> macSubtitleOCRResult {
         let accumulator = SubtitleAccumulator()
         let taskInputs = subtitles.map(OCRSubtitleTaskInput.init)
         let recognizer = makeTextRecognizer()
+        let total = taskInputs.count
+        var done = 0
 
         // Keep at most `maxConcurrentTasks` subtitles in flight by refilling the group as tasks finish.
         // Adding every subtitle up front and gating on a semaphore leaves the surplus tasks spinning on
@@ -98,7 +103,10 @@ struct SubtitleProcessor {
             // request, and overlapping constructions corrupt each other and can crash. Once built,
             // the engine is safe to share.
             if let first = pending.next() {
+                try Task.checkCancellation()
                 await recognize(first, into: accumulator, using: recognizer)
+                done += 1
+                progress?(done, total)
             }
 
             for _ in 0 ..< maxConcurrentTasks {
@@ -107,6 +115,10 @@ struct SubtitleProcessor {
             }
 
             while try await group.next() != nil {
+                done += 1
+                progress?(done, total)
+                // Throwing here cancels the group; the pictures already being read finish on their own.
+                try Task.checkCancellation()
                 guard let taskInput = pending.next() else { continue }
                 group.addTask { await recognize(taskInput, into: accumulator, using: recognizer) }
             }
@@ -157,7 +169,9 @@ struct SubtitleProcessor {
 
         let (subtitleText, subtitleLines) = await recognizer(subImage)
         let correctedText: String
-        if language.contains("en"), !disableICorrection {
+        // Only when the track is English: the list always ends in English as a fallback, so testing
+        // for "en" anywhere in it turned the French "l'homme" into "I'homme".
+        if language.split(separator: ",").first == "en", !disableICorrection {
             let pattern = #"\bl\b"# // Replace l with I when it's a single character
             correctedText = subtitleText.replacingOccurrences(of: pattern, with: "I", options: .regularExpression)
         } else {
@@ -225,12 +239,17 @@ struct SubtitleProcessor {
                 ? nil
                 : createRecognizeTextRequest(usingLanguageCorrection: false)
 
+            // Each picture is read in a task of its own, apart from the caller's, so a cancel never
+            // reaches Vision halfway through a request: requests canceled that way crashed the app
+            // inside Vision a moment later. A canceled reading stops between pictures instead.
             @Sendable func read(_ image: CGImage) async -> [RecognizedTextObservation] {
-                if let observations = try? await request.perform(on: image), !observations.isEmpty {
-                    return observations
-                }
-                guard let uncorrected else { return [] }
-                return await (try? uncorrected.perform(on: image)) ?? []
+                await Task {
+                    if let observations = try? await request.perform(on: image), !observations.isEmpty {
+                        return observations
+                    }
+                    guard let uncorrected else { return [] }
+                    return await (try? uncorrected.perform(on: image)) ?? []
+                }.value
             }
 
             return { image in

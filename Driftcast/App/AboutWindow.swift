@@ -15,8 +15,8 @@ final class AboutWindow {
         UpdateConfig.repositoryPath.flatMap { URL(string: "https://github.com/\($0)") }
     }
 
-    /// The licence texts copied into the app by the build.
-    static func licenceFile(_ name: String) -> URL? {
+    /// The license texts copied into the app by the build.
+    static func licenseFile(_ name: String) -> URL? {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent("Licenses/\(name)"),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
@@ -165,10 +165,10 @@ struct AboutView: View {
             Text("Chromecast and Google TV are trademarks of Google LLC. AirPlay, Apple TV and Mac are trademarks of Apple Inc. Dolby is a trademark of Dolby Laboratories. Driftcast is not affiliated with or endorsed by any of them.")
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                if let licence = AboutWindow.licenceFile("LICENSE.txt") {
-                    Button("Licence") { NSWorkspace.shared.open(licence) }
+                if let license = AboutWindow.licenseFile("LICENSE.txt") {
+                    Button("License") { NSWorkspace.shared.open(license) }
                 }
-                if let notice = AboutWindow.licenceFile("NOTICE.txt") {
+                if let notice = AboutWindow.licenseFile("NOTICE.txt") {
                     Button("Acknowledgements") { NSWorkspace.shared.open(notice) }
                 }
                 Spacer()

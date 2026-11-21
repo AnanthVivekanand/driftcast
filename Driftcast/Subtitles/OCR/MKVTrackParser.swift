@@ -9,293 +9,385 @@
 import Foundation
 import os
 
+/// Pulls PGS and VobSub tracks out of a Matroska file, rewrapped as a .sup stream and as a .sub stream
+/// with its index, which is what the picture readers take.
+///
+/// `tracks` lists the file's picture tracks in the order their track entries appear, the same order
+/// ffprobe numbers them in, with a track that has no blocks kept as an empty placeholder. The list used
+/// to be built from a dictionary, so with two picture tracks the n-th entry was whichever the run's
+/// hash order put there, and English could be read as Spanish and cached as English.
 class MKVTrackParser: MKVFileHandler {
     // MARK: - Properties
 
     private(set) var tracks: [MKVTrack] = []
-    private var codecPrivate = [Int: String]()
-    private var languages = [Int: String]()
+
+    /// The file's tick in nanoseconds, from its Info element.
+    private var timestampScale: UInt64 = 1_000_000
+
+    /// The most of one block, or one inflated block, held in memory. A PGS display set is well under a
+    /// megabyte and a VobSub picture under 64 KB, so anything near this is damage.
+    private static let blockLimit = 32 << 20
+
+    /// How a track's blocks were packed by the muxer (Matroska's ContentEncodings).
+    enum Packing {
+        case zlib
+        case headerStripping(Data)
+        case unsupported(String)
+    }
+
+    struct ContentEncoding {
+        var order: UInt64 = 0
+        /// Bit 1: the blocks. Bit 2: CodecPrivate.
+        var scope: UInt64 = 1
+        var packing: Packing = .zlib
+    }
+
+    struct TrackEntry {
+        var number = 0
+        var codecID = ""
+        var language: String?
+        var codecPrivate: Data?
+        var encodings: [ContentEncoding] = []
+    }
+
+    private struct TrackBuffer {
+        var data = Data()
+        var indexLines: [String] = []
+    }
 
     // MARK: - Functions
 
-    func parseTracks(for codecs: [String]) throws {
-        guard findElement(withID: EBML.segmentID) as? (UInt64, UInt32) != nil else {
-            throw macSubtitleOCRError.invalidInputFile("MKV segment element not found in file")
-        }
+    /// Reads the track entries and the blocks of every track whose codec is in `codecs`, or with
+    /// `position`, only of the one at that place among them (the rest are listed empty). Reading one
+    /// track no longer holds every picture track of the film in memory at once.
+    ///
+    /// Throws for a track whose blocks are packed in a way this can't undo, so the caller can fall back
+    /// to burning the subtitle in, and throws `CancellationError` when its task is canceled mid-file.
+    func parseTracks(for codecs: [String], onlyAt position: Int? = nil) throws {
+        tracks = []
+        let segment = try findSegment()
 
-        guard let (tracksSize, _) = findElement(withID: EBML.tracksID) as? (UInt64, UInt32) else {
+        var entries: [TrackEntry]?
+        var firstCluster: UInt64?
+        seek(to: segment.start)
+        while let element = try nextElement(before: segment.end) {
+            if element.id == EBML.cluster {
+                firstCluster = element.headerStart
+                break
+            }
+            if element.id == EBML.tracksID, entries == nil {
+                entries = try readTrackEntries(element)
+            } else if element.id == EBML.info {
+                try readInfo(element)
+            }
+            guard element.sizeKnown else { break }
+            seek(to: element.end)
+        }
+        guard let entries else {
             throw macSubtitleOCRError.invalidInputFile("MKV tracks element not found in file")
         }
 
-        let endOfTracksOffset = fileHandle.offsetInFile + tracksSize
+        let pictureTracks = entries.filter { codecs.contains($0.codecID) }
+        let wanted: [TrackEntry]
+        if let position {
+            wanted = pictureTracks.indices.contains(position) ? [pictureTracks[position]] : []
+        } else {
+            wanted = pictureTracks
+        }
+        for entry in wanted {
+            try Self.checkPacking(of: entry)
+        }
 
-        var subtitleTracks = [Int: String]()
-        while fileHandle.offsetInFile < endOfTracksOffset {
-            if let (elementID, elementSize) = tryParseElement() {
-                if elementID == EBML.trackEntryID {
-                    logger.debug("Found TrackEntry element")
-                    if let track = parseTrackEntry(for: codecs) {
-                        subtitleTracks[track.0] = track.1
-                    }
-                } else if elementID == EBML.chapters {
+        var buffers: [Int: TrackBuffer] = [:]
+        if let firstCluster, !wanted.isEmpty {
+            let byNumber = Dictionary(wanted.map { ($0.number, $0) }) { first, _ in first }
+            try readClusters(from: firstCluster, segmentEnd: segment.end, wanted: byNumber, into: &buffers)
+        }
+
+        tracks = pictureTracks.map { entry in
+            let buffer = buffers[entry.number] ?? TrackBuffer()
+            return MKVTrack(
+                trackNumber: entry.number,
+                codecID: entry.codecID,
+                trackData: buffer.data,
+                idxData: entry.codecID == "S_VOBSUB" ? Self.indexText(for: entry, lines: buffer.indexLines) : nil,
+                language: entry.language)
+        }
+    }
+
+    // MARK: - Header
+
+    private func findSegment() throws -> Element {
+        seek(to: 0)
+        guard let header = try nextElement(before: endOfFile), header.id == EBML.ebmlHeader, header.sizeKnown else {
+            throw macSubtitleOCRError.invalidInputFile("The file isn't a Matroska file.")
+        }
+        seek(to: header.end)
+        while let element = try nextElement(before: endOfFile) {
+            if element.id == EBML.segmentID {
+                return element
+            }
+            guard element.sizeKnown else { break }
+            seek(to: element.end)
+        }
+        throw macSubtitleOCRError.invalidInputFile("MKV segment element not found in file")
+    }
+
+    private func readInfo(_ info: Element) throws {
+        guard let data = try readData(of: info, limit: 1 << 20) else { return }
+        for (id, value) in EBMLParser.children(data) where id == EBML.timestampScale {
+            if let scale = EBMLParser.readUnsigned(value), scale > 0 {
+                timestampScale = scale
+            }
+        }
+    }
+
+    private func readTrackEntries(_ tracksElement: Element) throws -> [TrackEntry] {
+        guard let data = try readData(of: tracksElement, limit: 16 << 20) else {
+            throw macSubtitleOCRError.invalidInputFile("The MKV track list is too large to be real.")
+        }
+        var entries: [TrackEntry] = []
+        for (id, entryData) in EBMLParser.children(data) where id == EBML.trackEntryID {
+            var entry = TrackEntry()
+            var language: String?
+            var languageBCP47: String?
+            for (field, value) in EBMLParser.children(entryData) {
+                switch field {
+                case EBML.trackNumberID:
+                    entry.number = Int(clamping: EBMLParser.readUnsigned(value) ?? 0)
+                case EBML.codecID:
+                    entry.codecID = Self.text(value)
+                case EBML.language:
+                    language = Self.text(value)
+                case EBML.languageBCP47:
+                    languageBCP47 = Self.text(value)
+                case EBML.codecPrivate:
+                    entry.codecPrivate = value
+                case EBML.contentEncodings:
+                    entry.encodings = Self.readEncodings(value)
+                default:
                     break
-                } else {
-                    fileHandle.seek(toFileOffset: fileHandle.offsetInFile + elementSize)
                 }
             }
-        }
-
-        let trackData = extractTrackData(for: subtitleTracks)
-        trackData?.forEach { trackNumber, data in
-            if data.isEmpty {
-                print("Found empty track data for track \(trackNumber), skipping track!")
-                return
+            entry.language = [languageBCP47, language].compactMap { $0 }.first { !$0.isEmpty }
+            if entry.number > 0 {
+                entries.append(entry)
             }
-            tracks.append(MKVTrack(
-                trackNumber: trackNumber,
-                codecID: subtitleTracks[trackNumber]!,
-                trackData: data,
-                idxData: codecPrivate[trackNumber],
-                language: languages[trackNumber]))
+        }
+        return entries
+    }
+
+    private static func readEncodings(_ data: Data) -> [ContentEncoding] {
+        var encodings: [ContentEncoding] = []
+        for (id, encodingData) in EBMLParser.children(data) where id == EBML.contentEncoding {
+            var encoding = ContentEncoding()
+            var type: UInt64 = 0
+            var compression: Data?
+            for (field, value) in EBMLParser.children(encodingData) {
+                switch field {
+                case EBML.contentEncodingOrder: encoding.order = EBMLParser.readUnsigned(value) ?? 0
+                case EBML.contentEncodingScope: encoding.scope = EBMLParser.readUnsigned(value) ?? 1
+                case EBML.contentEncodingType: type = EBMLParser.readUnsigned(value) ?? 0
+                case EBML.contentCompression: compression = value
+                default: break
+                }
+            }
+            if type != 0 {
+                encoding.packing = .unsupported("encrypted")
+            } else {
+                var algorithm: UInt64 = 0
+                var settings = Data()
+                for (field, value) in EBMLParser.children(compression ?? Data()) {
+                    if field == EBML.contentCompAlgo { algorithm = EBMLParser.readUnsigned(value) ?? 0 }
+                    if field == EBML.contentCompSettings { settings = value }
+                }
+                switch algorithm {
+                case 0: encoding.packing = .zlib
+                case 3: encoding.packing = .headerStripping(settings)
+                case 1: encoding.packing = .unsupported("bzip2")
+                case 2: encoding.packing = .unsupported("LZO")
+                default: encoding.packing = .unsupported("method \(algorithm)")
+                }
+            }
+            encodings.append(encoding)
+        }
+        // Undone from the highest order down, as the Matroska specification says.
+        return encodings.sorted { $0.order > $1.order }
+    }
+
+    private static func checkPacking(of entry: TrackEntry) throws {
+        for encoding in entry.encodings where encoding.scope & 3 != 0 {
+            if case .unsupported(let method) = encoding.packing {
+                throw macSubtitleOCRError.unsupportedPacking(method)
+            }
         }
     }
 
-    func extractTrackData(for tracks: [Int: String]) -> [Int: Data]? {
-        fileHandle.seek(toFileOffset: 0)
-
-        // Step 1: Locate the Segment element
-        guard let segmentSize = locateSegment() else { return nil }
-        let segmentEndOffset = fileHandle.offsetInFile + segmentSize
-        logger.debug("Found Segment, Size: \(segmentSize), End Offset: \(segmentEndOffset)")
-
-        var trackData = [Int: Data]()
-
-        // Step 2: Parse Clusters within the Segment
-        while fileHandle.offsetInFile < segmentEndOffset {
-            guard let clusterSize = locateCluster() else { continue }
-            let clusterEndOffset = fileHandle.offsetInFile + clusterSize
-
-            // Step 3: Extract the cluster timestamp
-            guard let clusterTimestamp = extractClusterTimestamp() else {
-                logger.warning("Failed to extract cluster timestamp, skipping cluster.")
-                continue
+    /// Undoes the track's packing for data in `scope` (1 for blocks, 2 for CodecPrivate).
+    private static func unpack(_ data: Data, for entry: TrackEntry, scope: UInt64) throws -> Data {
+        var data = data
+        for encoding in entry.encodings where encoding.scope & scope != 0 {
+            switch encoding.packing {
+            case .zlib:
+                data = try zlibInflate(data, limit: blockLimit)
+            case .headerStripping(let header):
+                data = header + data
+            case .unsupported(let method):
+                throw macSubtitleOCRError.unsupportedPacking(method)
             }
-
-            // Step 4: Parse Blocks (SimpleBlock or Block) within each Cluster
-            parseBlocks(until: clusterEndOffset, for: tracks, with: clusterTimestamp, into: &trackData)
         }
-
-        return trackData
+        return data
     }
 
-    // MARK: - Methods
+    private static func text(_ data: Data) -> String {
+        String(decoding: data.filter { $0 != 0 }, as: UTF8.self)
+    }
 
-    private func parseTrackEntry(for codecs: [String]) -> (Int, String)? {
-        var trackNumber: Int?
-        var trackType: UInt8?
-        var codecID: String?
-        var language: String?
+    /// The VobSub index for a track: the header lines from CodecPrivate (palette, size), one language
+    /// section, and the time and place of each picture.
+    private static func indexText(for entry: TrackEntry, lines: [String]) -> String {
+        let header = entry.codecPrivate.flatMap { try? unpack($0, for: entry, scope: 2) }.map(text) ?? ""
+        let kept = header.split(whereSeparator: \.isNewline).filter { line in
+            !["id:", "langidx:", "timestamp:", "#"].contains { line.hasPrefix($0) }
+        }
+        let language = String((entry.language ?? "und").unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" }.map(Character.init))
+        return (["# VobSub index file, v7 (do not modify this line!)"] + kept.map(String.init)
+            + ["langidx: 0", "id: \(language.isEmpty ? "und" : language), index: 0"] + lines)
+            .joined(separator: "\n") + "\n"
+    }
 
-        while let (elementID, elementSize) = tryParseElement() {
-            switch elementID {
-            case EBML.trackNumberID:
-                trackNumber = Int((fileHandle.readData(ofLength: Int(elementSize)).first)!)
-                logger.debug("Found track number: \(trackNumber!)")
-            case EBML.trackTypeID: // Unused by us, left for debugging
-                trackType = fileHandle.readData(ofLength: Int(elementSize)).first
-                logger.debug("Found track type: \(trackType!)")
-            case EBML.codecID:
-                var data = fileHandle.readData(ofLength: Int(elementSize))
-                data.removeNullBytes()
-                codecID = String(data: data, encoding: .ascii)
-                logger.debug("Found codec ID: \(codecID!)")
-            case EBML.language, EBML.languageBCP47:
-                var data = fileHandle.readData(ofLength: Int(elementSize))
-                data.removeNullBytes()
-                language = String(data: data, encoding: .ascii)
-                logger.debug("Found language: \(language!)")
-                languages[trackNumber!] = language
-            default:
-                fileHandle.seek(toFileOffset: fileHandle.offsetInFile + elementSize)
+    // MARK: - Clusters
+
+    private func readClusters(from start: UInt64, segmentEnd: UInt64, wanted: [Int: TrackEntry],
+                              into buffers: inout [Int: TrackBuffer]) throws {
+        seek(to: start)
+        while let element = try nextElement(before: segmentEnd) {
+            if Task.isCancelled {
+                throw CancellationError()
             }
-            if trackNumber != nil, trackType != nil, codecID != nil {
+            if element.id == EBML.cluster {
+                try readCluster(element, wanted: wanted, into: &buffers)
+            } else if element.sizeKnown {
+                seek(to: element.end)
+            } else {
+                // Only a Segment or a Cluster may leave its size open; anything else is damage.
                 break
             }
         }
+    }
 
-        if let trackNumber, let codecID {
-            if codecID == "S_VOBSUB" {
-                while let (elementID, elementSize) = tryParseElement() {
-                    switch elementID {
-                    case EBML.codecPrivate:
-                        var data = fileHandle.readData(ofLength: Int(elementSize))
-                        data.removeNullBytes()
-                        codecPrivate[trackNumber] = "# VobSub index file, v7 (do not modify this line!)\n" +
-                            (String(data: data, encoding: .ascii) ?? "")
-                        if let language {
-                            codecPrivate[trackNumber]!.append("langidx: 0\n")
-                            codecPrivate[trackNumber]!.append("\nid: \(language), index: 0")
-                        }
-                    default:
-                        fileHandle.seek(toFileOffset: fileHandle.offsetInFile + elementSize)
+    /// Reads one cluster's blocks and leaves the position where the next top-level element starts. A
+    /// cluster of unknown size ends where the next cluster (or any other top-level element) begins.
+    private func readCluster(_ cluster: Element, wanted: [Int: TrackEntry],
+                             into buffers: inout [Int: TrackBuffer]) throws {
+        var clusterTime: UInt64 = 0
+        seek(to: cluster.start)
+        while let child = try nextElement(before: cluster.end) {
+            if !cluster.sizeKnown, EBML.topLevel.contains(child.id) {
+                seek(to: child.headerStart)
+                return
+            }
+            switch child.id {
+            case EBML.timestamp:
+                clusterTime = try readData(of: child, limit: 8).flatMap(EBMLParser.readUnsigned) ?? 0
+            case EBML.simpleBlock:
+                try readBlock(child, clusterTime: clusterTime, wanted: wanted, into: &buffers)
+            case EBML.blockGroup:
+                seek(to: child.start)
+                while let part = try nextElement(before: child.end) {
+                    if part.id == EBML.block {
+                        try readBlock(part, clusterTime: clusterTime, wanted: wanted, into: &buffers)
                     }
-                    if codecPrivate[trackNumber] != nil {
-                        break
-                    }
+                    guard part.sizeKnown else { break }
+                    seek(to: part.end)
                 }
+            default:
+                break
             }
-            if codecs.contains(codecID) {
-                return (trackNumber, codecID)
-            }
+            guard child.sizeKnown else { break }
+            seek(to: child.end)
         }
-        return nil
+        // A damaged child ends the cluster early; a cluster of known size is stepped over whole.
+        seek(to: cluster.sizeKnown ? cluster.end : endOfFile)
     }
 
-    private func extractClusterTimestamp() -> Int64? {
-        if let (timestampElementSize, _) = findElement(withID: EBML.timestamp) as? (UInt64, UInt32) {
-            return readFixedLengthNumber(fileHandle: fileHandle, length: Int(timestampElementSize))
+    private func readBlock(_ block: Element, clusterTime: UInt64, wanted: [Int: TrackEntry],
+                           into buffers: inout [Int: TrackBuffer]) throws {
+        seek(to: block.start)
+        let head = try read(Int(min(12, block.end - block.start)))
+        guard let (number, numberLength) = EBMLParser.readVINT(head, at: 0, keepMarker: false),
+              numberLength + 3 <= head.count,
+              let entry = wanted[Int(clamping: number)]
+        else { return }
+        let byte = { (index: Int) in head[head.startIndex + index] }
+        let relative = Int16(bitPattern: UInt16(byte(numberLength)) << 8 | UInt16(byte(numberLength + 1)))
+        let flags = byte(numberLength + 2)
+        guard flags & 0x06 == 0 else {
+            logger.warning("Skipping a laced subtitle block on track \(entry.number)")
+            return
         }
-        return nil
+        let frameStart = block.start + UInt64(numberLength + 3)
+        guard block.end - frameStart <= UInt64(Self.blockLimit) else { return }
+        seek(to: frameStart)
+        let frame: Data
+        do {
+            frame = try Self.unpack(read(Int(block.end - frameStart)), for: entry, scope: 1)
+        } catch let error as macSubtitleOCRError {
+            // One damaged block costs one picture, not the track.
+            logger.warning("Skipping a subtitle block on track \(entry.number): \(String(describing: error))")
+            return
+        }
+        let pts = absolutePTS(cluster: clusterTime, block: relative, timestampScale: timestampScale)
+        if entry.codecID == "S_HDMV/PGS" {
+            Self.appendPGS(frame, pts: pts, to: &buffers[entry.number, default: TrackBuffer()])
+        } else if entry.codecID == "S_VOBSUB" {
+            Self.appendVobSub(frame, pts: pts, to: &buffers[entry.number, default: TrackBuffer()])
+        }
     }
 
-    private func parseBlocks(until clusterEndOffset: UInt64, for tracks: [Int: String], with clusterTimestamp: Int64,
-                             into trackData: inout [Int: Data]) {
-        while fileHandle.offsetInFile < clusterEndOffset {
-            // swiftformat:disable:next redundantSelf
-            logger.debug("Looking for Block at Offset: \(self.fileHandle.offsetInFile)/\(clusterEndOffset)")
-
-            guard let (blockSize, blockStartOffset) = findBlockTypeAndSize() else { break }
-
-            guard let (blockTrackNumber, blockTimestamp) = readTrackNumber(from: fileHandle) as? (UInt64, Int64)
-            else { continue }
-
-            if tracks[Int(blockTrackNumber)] == "S_HDMV/PGS" {
-                handlePGSBlock(for: blockTrackNumber,
-                               with: blockTimestamp, blockSize, clusterTimestamp, blockStartOffset, &trackData)
-            } else if tracks[Int(blockTrackNumber)] == "S_VOBSUB" {
-                handleVobSubBlock(for: blockTrackNumber,
-                                  with: blockTimestamp, blockSize, clusterTimestamp, blockStartOffset, &trackData)
-            } else {
-                // Skip this block because it's for a different track
-                fileHandle.seek(toFileOffset: blockStartOffset + blockSize)
-            }
-        }
-    }
-
-    private func handlePGSBlock(for blockTrackNumber: UInt64, with blockTimestamp: Int64, _ blockSize: UInt64,
-                                _ clusterTimestamp: Int64, _ blockStartOffset: UInt64, _ trackData: inout [Int: Data]) {
-        let absPTS = calculateAbsolutePTS(clusterTimestamp, blockTimestamp)
-        let pgsPTS = encodePTSForPGS(absPTS)
-        let pgsHeader = Data([0x50, 0x47] + pgsPTS + [0x00, 0x00, 0x00, 0x00])
-
-        var blockData = Data()
-        blockData.reserveCapacity(Int(blockSize))
-        let raw = fileHandle.readData(ofLength: Int(blockSize - (fileHandle.offsetInFile - blockStartOffset)))
-
+    /// Matroska keeps a PGS segment's type, size and data but drops its 13 byte "PG" header; this puts
+    /// the header back. A segment cut short at the end of the block is left out rather than passed on
+    /// with a size that runs past its data.
+    private static func appendPGS(_ frame: Data, pts: UInt64, to buffer: inout TrackBuffer) {
+        let header = Data([0x50, 0x47] + encodePTSForPGS(pts) + [0x00, 0x00, 0x00, 0x00])
+        let bytes = [UInt8](frame)
         var offset = 0
-        while (offset + 3) <= raw.count {
-            let segmentSize = min(Int(raw.getUInt16BE(at: offset + 1)! + 3), raw.count - offset)
-            logger.debug("Segment size \(segmentSize) at \(offset) type \(raw[offset].hex())")
-
-            blockData.append(pgsHeader)
-            blockData.append(raw.subdata(in: offset ..< segmentSize + offset))
-            offset += segmentSize
-        }
-
-        let trackNumber = Int(blockTrackNumber)
-        if trackData[trackNumber] == nil {
-            trackData[trackNumber] = Data()
-        }
-        trackData[trackNumber]?.append(blockData)
-    }
-
-    private func handleVobSubBlock(for blockTrackNumber: UInt64, with blockTimestamp: Int64, _ blockSize: UInt64,
-                                   _ clusterTimestamp: Int64, _ blockStartOffset: UInt64, _ trackData: inout [Int: Data]) {
-        let absolutePTS = calculateAbsolutePTS(clusterTimestamp, blockTimestamp)
-        let vobSubPTS = encodePTSForVobSub(from: absolutePTS)
-
-        var segmentSize = Int(blockSize - (fileHandle.offsetInFile - blockStartOffset))
-        var buffer = buildVobSubHeader(pts: vobSubPTS, segmentSize: segmentSize)
-
-        buffer.append(fileHandle.readData(ofLength: min(segmentSize, 2019)))
-        segmentSize -= min(segmentSize, 2019)
-
-        appendVobSubSegments(segmentSize: segmentSize, buffer: &buffer)
-
-        let trackNumber = Int(blockTrackNumber)
-        if trackData[trackNumber] == nil {
-            trackData[trackNumber] = Data()
-        }
-        trackData[trackNumber]!.append(buffer)
-
-        let offset = String(format: "%09X", trackData[trackNumber]!.count - buffer.count)
-        codecPrivate[trackNumber]?.append("\ntimestamp: \(formatTime(absolutePTS)), filepos: \(offset)")
-    }
-
-    // swiftformat:disable all
-    private func buildVobSubHeader(pts: [UInt8], segmentSize: Int) -> Data {
-        // PES length includes the flags, header length, PTS and stream ID after it.
-        let pesLength = withUnsafeBytes(of: UInt16(min(segmentSize, 2019) + 9).bigEndian) { Array($0) }
-        var vobSubHeader = Data()
-        vobSubHeader.reserveCapacity(segmentSize + 512)
-        vobSubHeader = Data([0x00, 0x00, 0x01, 0xBA,                  // PS packet start code
-                             0x00, 0x00, 0x00, 0x00, 0x00, 0x0,       // Null system clock reference
-                             0x00, 0x00, 0x00,                        // Null multiplexer rate
-                             0x00,                                    // Stuffing length
-                             0x00, 0x00, 0x01, 0xBD])                 // PES packet start code
-        vobSubHeader.append(contentsOf: pesLength)                    // PES packet length
-        vobSubHeader.append(contentsOf: [0x00,                        // PES miscellaneous data
-                                         0x80,                        // PTS DTS flag
-                                         UInt8(pts.count)])           // PTS data length
-        vobSubHeader.append(contentsOf: pts)                          // PTS data
-        vobSubHeader.append(contentsOf: [0x00])                       // Null stream ID
-        return vobSubHeader
-    }
-
-    private func appendVobSubSegments(segmentSize: Int, buffer: inout Data) {
-        var remainingSize = segmentSize
-        while remainingSize > 0 {
-            // Continuation packets have three header bytes and a stream ID.
-            let nextSegmentSize = min(remainingSize, 2024) + 4
-            let pesLength = withUnsafeBytes(of: UInt16(nextSegmentSize).bigEndian) { Array($0) }
-            buffer.append(contentsOf: [0x00, 0x00, 0x01, 0xBA,              // PS packet start code
-                                       0x00, 0x00, 0x00, 0x00, 0x00, 0x0,   // Null system clock reference
-                                       0x00, 0x00, 0x00,                    // Null multiplexer rate
-                                       0x00,                                // Stuffing length
-                                       0x00, 0x00, 0x01, 0xBD])             // PES packet start code
-            buffer.append(contentsOf: pesLength)                            // PES packet length
-            buffer.append(contentsOf: [0x00,                                // PES miscellaneous data
-                                       0x00,                                // PTS DTS flag
-                                       0x00])                               // PTS data length
-            buffer.append(contentsOf: [0x00])                               // Null stream ID
-            buffer.append(fileHandle.readData(ofLength: min(remainingSize, 2024)))
-            remainingSize -= min(remainingSize, 2024)
+        while offset + 3 <= bytes.count {
+            let size = Int(bytes[offset + 1]) << 8 | Int(bytes[offset + 2])
+            guard offset + 3 + size <= bytes.count else { break }
+            buffer.data.append(header)
+            buffer.data.append(contentsOf: bytes[offset ..< offset + 3 + size])
+            offset += 3 + size
         }
     }
-    // swiftformat:enable all
 
-    private func findBlockTypeAndSize() -> (blockSize: UInt64, blockStartOffset: UInt64)? {
-        guard case (var blockSize?, let blockType?) = findElement(withID: EBML.simpleBlock, EBML.blockGroup) else {
-            return nil
+    /// Matroska keeps a VobSub picture as the bare subpicture unit; this wraps it in the MPEG program
+    /// stream packs a .sub file holds and notes its time and place for the index.
+    private static func appendVobSub(_ frame: Data, pts: UInt64, to buffer: inout TrackBuffer) {
+        guard !frame.isEmpty else { return }
+        buffer.indexLines.append("timestamp: \(vobSubIndexTime(pts)), filepos: \(String(format: "%09X", buffer.data.count))")
+        var remaining = frame[...]
+        var first = true
+        while !remaining.isEmpty {
+            // A 2048 byte pack: 14 bytes of pack header, 6 of PES start code and length, then the PES
+            // header (9 bytes with the time on the first pack, 4 without) and the payload.
+            let room = first ? 2019 : 2024
+            let payload = remaining.prefix(room)
+            remaining = remaining.dropFirst(payload.count)
+            let pesHeader: [UInt8] = first
+                ? [0x81, 0x80, 0x05] + encodePTSForVobSub(from: pts) + [0x20]
+                : [0x81, 0x00, 0x00, 0x20]
+            let pesLength = UInt16(pesHeader.count + payload.count)
+            buffer.data.append(contentsOf: [0x00, 0x00, 0x01, 0xBA,             // Pack start code
+                                            0x44, 0x00, 0x04, 0x00, 0x04, 0x01, // MPEG-2 system clock reference
+                                            0x01, 0x89, 0xC3,                   // Multiplexer rate
+                                            0xF8,                               // No stuffing
+                                            0x00, 0x00, 0x01, 0xBD,             // Private stream 1
+                                            UInt8(pesLength >> 8), UInt8(pesLength & 0xFF)])
+            buffer.data.append(contentsOf: pesHeader)
+            buffer.data.append(payload)
+            first = false
         }
-
-        var blockStartOffset = fileHandle.offsetInFile
-        if blockType == EBML.blockGroup {
-            guard let (newSize, _) = findElement(withID: EBML.block) as? (UInt64, UInt32) else { return nil }
-            blockSize = newSize
-            blockStartOffset = fileHandle.offsetInFile
-        }
-        return (blockSize, blockStartOffset)
-    }
-
-    /// Function to read the track number, timestamp, and lacing type (if any) from a Block or SimpleBlock header
-    private func readTrackNumber(from fileHandle: FileHandle) -> (UInt64?, Int64) {
-        let trackNumber = ebmlParser.readVINT(elementSize: true)
-        let timestamp = readFixedLengthNumber(fileHandle: fileHandle, length: 2)
-        let suffix = fileHandle.readData(ofLength: 1).first ?? 0
-
-        let lacingFlag = (suffix >> 1) & 0x03 // Bits 1 and 2 are the lacing type (unused by us, kept for debugging)
-        logger.debug("Track number: \(trackNumber), Timestamp: \(timestamp), Lacing type: \(lacingFlag)")
-        return (trackNumber, timestamp)
     }
 }

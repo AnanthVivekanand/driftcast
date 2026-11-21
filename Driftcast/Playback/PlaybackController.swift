@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import MediaPlayer
 import SwiftUI
 
@@ -56,6 +57,11 @@ final class PlaybackController: ObservableObject {
     @Published private(set) var plan: StreamPlan?
     @Published private(set) var duration: Double = 0
     @Published private(set) var volume: Double = 1
+    /// The device's own mute (a TV muted with its remote, this Mac's player muted from the
+    /// bar), which the bar's speaker shows.
+    @Published private(set) var deviceMuted = false
+    /// The connection to the Chromecast dropped and is being remade; the bar says so.
+    @Published private(set) var castReconnecting = false
     @Published private(set) var audioIndex: Int?
     @Published private(set) var subtitleChoices: [SubtitleChoice] = []
     @Published private(set) var subtitle: SubtitleChoice?
@@ -68,8 +74,10 @@ final class PlaybackController: ObservableObject {
     /// Incremented when local playback starts so the UI opens the video window.
     @Published private(set) var videoWindowRequest = 0
     var isScrubbing = false
-    /// What the TV's pause and seek panel shows for the video playing (`MediaTitle.tvLines`).
+    /// What the TV's pause and seek panel shows for the video playing (`MediaItem.tvLines`).
     private var tvLines: (title: String, subtitle: String?)?
+    /// Whether those lines were made for a film found online with its poster card on.
+    private var tvLookedUp = false
     /// Set by the Subtitles menu or the bar's subtitle button to open the online search sheet.
     @Published var showSubtitleSearch = false
     /// The video whose Media Info sheet should be open (File menu and right-click menu).
@@ -83,6 +91,21 @@ final class PlaybackController: ObservableObject {
     private var appliedSubtitleScale = SubtitleSize.current
     private var session: StreamSession?
     private var loadToken = 0
+    /// The load under way. A newer one, Stop and a change of screen cancel it, so that what it
+    /// was waiting for (ffmpeg reading the file, a lookup) ends now and not when it would have.
+    private var loadTask: Task<Void, Never>?
+    /// The video whose sound track and first subtitle haven't been chosen yet. A load started
+    /// again before it got that far (a seek while the video was opening, a setting changed)
+    /// still owes it; without this the video came up with the last video's choices.
+    private var tracksOwed: MediaItem.ID?
+    /// The video that hasn't yet been entered in the watched list or shown its poster card.
+    /// Owed across a restarted load in the same way, and gone once the video has started, so
+    /// that a seek or a change of track mid-film brings no second card.
+    private var firstStartOwed: MediaItem.ID?
+    /// A video marked watched or unwatched by hand while it plays. The mark is the last word:
+    /// where the video had got to isn't saved over it five seconds later.
+    private var progressSetByHand: URL?
+    private var librarySync: AnyCancellable?
     private var lastProgressSave = Date.distantPast
     private var lastVolumeChange = Date.distantPast
     private var housekeeping: Timer?
@@ -125,6 +148,8 @@ final class PlaybackController: ObservableObject {
             }
         }
         setupRemoteCommands()
+        // Published as the list is about to change, with the list it changes to.
+        librarySync = library.$playlists.sink { [weak self] playlists in self?.syncQueue(with: playlists) }
         housekeeping = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -192,8 +217,10 @@ final class PlaybackController: ObservableObject {
     }
 
     var statusText: String {
+        if castReconnecting, case .cast(let d) = output { return "Reconnecting to \(d.name)…" }
         switch phase {
-        case .idle: return nowPlaying == nil ? "Not playing" : "Stopped"
+        // Under "Nothing playing", so it says what to do rather than the same again.
+        case .idle: return nowPlaying == nil ? "Double-click a video to play it" : "Stopped"
         case .preparing(let s): return s
         case .buffering: return airPlayProblem == nil ? "Buffering on \(outputName)…" : "The TV can't reach this Mac"
         case .playing: return airPlayProblem == nil ? "Playing on \(outputName)" : "The TV can't reach this Mac"
@@ -205,10 +232,18 @@ final class PlaybackController: ObservableObject {
     // MARK: Output selection
 
     func selectOutput(_ newOutput: PlaybackOutput) {
-        guard newOutput != output else { return }
+        guard newOutput != output else {
+            // The same TV chosen again after a failure: the video is tried again over the
+            // connection there is, which is not closed and made afresh.
+            if case .cast = output, case .failed = phase, let item = nowPlaying { start(item, at: position, fresh: false) }
+            return
+        }
         let resumeItem = nowPlaying
         let resumeAt = position
         loadToken += 1
+        loadTask?.cancel()
+        castReconnecting = false
+        deviceMuted = false
         target.stop()
         teardownSession()
         if case .cast = output {
@@ -239,7 +274,12 @@ final class PlaybackController: ObservableObject {
     func play(_ item: MediaItem, queue items: [MediaItem], fromBeginning: Bool = false, subtitle: SubtitleStart = .automatic) {
         queue = items
         queueIndex = items.firstIndex { $0.id == item.id } ?? 0
-        if fromBeginning { library.clearProgress(item.url) }
+        if fromBeginning {
+            library.clearProgress(item.url)
+            // The video playing, started over: where it had got to isn't saved back as the
+            // place to resume from (a place under ten seconds is never saved).
+            if nowPlaying?.url == item.url { position = 0 }
+        }
         startSubtitle = subtitle
         infoItem = item
         start(item, at: fromBeginning ? 0 : resumePoint(for: item), fresh: true)
@@ -250,19 +290,42 @@ final class PlaybackController: ObservableObject {
         return library.resumePosition(for: item.url) ?? 0
     }
 
-    private func start(_ item: MediaItem, at time: Double, fresh: Bool) {
+    /// `fresh` is a video picked or reached in the playlist, not one loaded again after a seek
+    /// or a change of track or screen. `paused` loads it without playing (a Chromecast
+    /// rejoined after its connection dropped while the video was paused).
+    private func start(_ item: MediaItem, at time: Double, fresh: Bool, paused: Bool = false) {
         saveProgress(force: true)
         // The details panel follows playback unless another video was picked out in the list.
         if infoItem == nil || infoItem?.id == nowPlaying?.id { infoItem = item }
+        if fresh {
+            tracksOwed = item.id
+            firstStartOwed = item.id
+            progressSetByHand = nil
+        }
+        castReconnecting = false
         loadToken += 1
         let token = loadToken
-        Task { await prepareAndLoad(item, at: time, fresh: fresh, token: token) }
+        loadTask?.cancel()
+        loadTask = Task { await prepareAndLoad(item, at: time, paused: paused, token: token) }
     }
 
-    private func prepareAndLoad(_ item: MediaItem, at time: Double, fresh: Bool, token: Int) async {
+    private func prepareAndLoad(_ item: MediaItem, at time: Double, paused: Bool, token: Int) async {
         teardownSession()
+        if nowPlaying?.id != item.id {
+            // Another video: the last one's length, tracks and artwork aren't shown under its
+            // name while it opens, and its length can't be saved as this one's (which could
+            // mark a video watched that had only just been opened).
+            info = nil
+            plan = nil
+            duration = 0
+            artwork = nil
+            subtitleChoices = []
+            subtitle = nil
+            audioIndex = nil
+        }
         nowPlaying = item
-        tvLines = item.parsedTitle.tvLines(lookedUp: false)
+        tvLookedUp = false
+        tvLines = item.tvLines(lookedUp: false)
         position = time
         seekableRange = time...time
         phase = .preparing("Opening \(item.displayName)…")
@@ -284,7 +347,7 @@ final class PlaybackController: ObservableObject {
             if stale() { return }
             self.info = info
             duration = info.duration
-            if fresh {
+            if tracksOwed == item.id {
                 subtitleChoices = SubtitleChoice.available(for: item, info: info)
                 audioIndex = Self.preferredAudio(info)?.index
                 let audio = info.audio.first { $0.index == audioIndex }
@@ -300,6 +363,7 @@ final class PlaybackController: ObservableObject {
                 case .use(let choice): subtitle = subtitleChoices.contains(choice) ? choice : automatic
                 }
                 startSubtitle = .automatic   // one video only; the next starts by the rules again
+                tracksOwed = nil
                 if searchOnline {
                     // Once per video per run, so a search that finds nothing isn't repeated on every replay.
                     autoSearched.insert(item.url)
@@ -310,7 +374,8 @@ final class PlaybackController: ObservableObject {
                     if let found {
                         library.attachSubtitle(found, toFile: item.url)
                         nowPlaying?.extraSubtitles.append(found)
-                        if infoItem?.url == item.url { infoItem?.extraSubtitles.append(found) }
+                        // (The details panel's copy may have taken it up from the library already.)
+                        if infoItem?.url == item.url, infoItem?.extraSubtitles.contains(found) == false { infoItem?.extraSubtitles.append(found) }
                         let choice = SubtitleChoice.external(found)
                         if !subtitleChoices.contains(choice) { subtitleChoices.append(choice) }
                         subtitle = choice
@@ -329,8 +394,21 @@ final class PlaybackController: ObservableObject {
             var cues: [SubtitleCue]?
             if let sub = subtitle, sub.isPicture, Prefs.bool(Prefs.ocrSubtitles), PictureSubtitleOCR.supports(sub, media: item.url) {
                 phase = .preparing("Reading subtitles with OCR… (first time only)")
-                cues = try? await PictureSubtitleOCR.shared.cues(for: sub, media: item.url, info: info,
-                                                                  preferredLanguage: Prefs.string(Prefs.subtitleLanguage))
+                do {
+                    cues = try await PictureSubtitleOCR.shared.cues(
+                        for: sub, media: item.url, info: info, preferredLanguage: Prefs.string(Prefs.subtitleLanguage),
+                        progress: { [weak self] done, total in
+                            Task { @MainActor in
+                                guard let self, self.loadToken == token, total > 0, case .preparing = self.phase else { return }
+                                self.phase = .preparing("Reading subtitles with OCR… \(done * 100 / total)%")
+                            }
+                        })
+                } catch is CancellationError {
+                } catch {
+                    // Logged; the subtitle is then drawn into the picture instead, as it is
+                    // with OCR turned off.
+                    ErrorLog.record("Subtitle OCR", item.url.lastPathComponent, error: error)
+                }
                 if stale() { return }
             }
             var plan = StreamPlanner.plan(info: info, file: item.url, profile: profile, settings: settings,
@@ -348,6 +426,11 @@ final class PlaybackController: ObservableObject {
                 if !plan.notes.isEmpty { plan.notes[0] = "Repackaged for streaming, no quality loss" }
             }
             self.plan = plan
+            // A stream is cut into pieces by time, and a file whose length can't be read has
+            // none to plan.
+            if plan.mode == .hls, info.duration <= 0 {
+                throw FFmpegError.failed("Driftcast couldn't read how long \(item.url.lastPathComponent) is, so it can't be prepared for \(outputName). The file may be incomplete or damaged.")
+            }
 
             if case .cast(let d) = output { phase = .preparing("Connecting to \(d.name)…") }
             let host = try await target.prepare()
@@ -355,7 +438,20 @@ final class PlaybackController: ObservableObject {
 
             if let text = plan.textSubtitle, cues == nil {
                 phase = .preparing("Loading subtitles…")
-                cues = try? await SubtitleLoader.shared.cues(for: text, media: item.url)
+                do {
+                    cues = try await SubtitleLoader.shared.cues(for: text, media: item.url)
+                } catch is CancellationError {
+                } catch {
+                    // Logged, and shown as off: the menu otherwise went on saying a subtitle
+                    // was on with nothing on the screen and nothing to say why.
+                    let name: String
+                    switch text {
+                    case .embedded(let track): name = "track \(track.index)"
+                    case .external(let url): name = url.lastPathComponent
+                    }
+                    ErrorLog.record("Subtitles", "\(name) for \(item.url.lastPathComponent)", error: error)
+                    if token == loadToken { subtitle = nil }
+                }
                 if stale() { return }
             }
 
@@ -385,14 +481,18 @@ final class PlaybackController: ObservableObject {
                 if stale() { return }
             }
             // The year goes only when the poster card, which shows it, is on.
-            tvLines = item.parsedTitle.tvLines(lookedUp: details != nil && cardWanted)
+            tvLookedUp = details != nil && cardWanted
+            tvLines = item.tvLines(lookedUp: tvLookedUp)
             var artwork: Data?
             if let url = details?.posterURL { artwork = await MetadataLookup.shared.artwork(url, within: 4) }
             if artwork == nil { artwork = await Thumbnailer.shared.poster(for: item.url, duration: info.duration) }
             if stale() { return }
             self.artwork = artwork.flatMap { NSImage(data: $0) }
 
-            if cardWanted, isLocal, let grid, let size = plan.outputVideoSize, let v = info.video,
+            // The card and the watched list are for a video starting, not for one loaded again
+            // mid-film after a seek or a change of track or screen.
+            let first = firstStartOwed == item.id
+            if cardWanted, first, isLocal, let grid, let size = plan.outputVideoSize, let v = info.video,
                !(v.isHDR && !plan.isTranscodingVideo),   // an SDR card before HDR would make the TV switch modes twice
                let card = TitleCard.render(poster: artwork, title: item.displayName, details: details, size: size) {
                 session.intro = StreamSession.Intro(card: card, size: size, atSegment: grid.index(at: time), hardware: settings.hardware,
@@ -442,7 +542,9 @@ final class PlaybackController: ObservableObject {
                 subtitleLanguage: session.subtitleLanguage,
                 posterURL: posterURL,
                 details: details,
-                posterHoldSeconds: cardWanted && !isLocal ? TitleCard.seconds : 0)
+                // A speaker has no screen for the poster: the sound starts at once.
+                posterHoldSeconds: cardWanted && first && !isLocal && !plan.isAudioOnly ? TitleCard.seconds : 0,
+                startPaused: paused)
 
             phase = .preparing("Starting playback on \(outputName)…")
             if isLocal && isAirPlaying { airPlayExpectedSince = Date(); airPlayProblem = nil }
@@ -451,17 +553,25 @@ final class PlaybackController: ObservableObject {
             phase = .buffering
             // A video picked or reached in the playlist, not one reloaded after a seek or a
             // change of screen.
-            if fresh, Prefs.bool(Prefs.watchedList) {
-                WatchedList.record(title: item.displayName, filename: item.url.lastPathComponent)
+            if first, Prefs.bool(Prefs.watchedList) {
+                WatchedList.record(title: item.displayName, filename: item.url.lastPathComponent, path: item.url.path)
             }
+            firstStartOwed = nil
             // Also while casting: the window then carries the "connected to" watermark.
             videoWindowRequest += 1
             updateNowPlayingInfo()
         } catch {
-            if token != loadToken || error is CancellationError { return }
-            if let created { MediaServer.shared.unregister(created); created.stop() }
+            // A load that was overtaken or canceled still made a stream of its own: that is
+            // stopped here, or its ffmpeg ran on with nothing left to end it. The one the
+            // player now holds belongs to the load that overtook this one and is left alone.
+            let stale = token != loadToken || error is CancellationError
+            if let created, !stale || created !== session { MediaServer.shared.unregister(created); created.stop() }
+            if stale { return }
             if session === created { session = nil }
             streamURL = nil   // the stream is gone; the mirror has nothing to follow
+            castReconnecting = false
+            // Nothing is being served any more: the Mac may sleep again.
+            if session == nil { setStreaming(false) }
             ErrorLog.record("Playback", "\(item.url.lastPathComponent) on \(outputName)", error: error)
             phase = .failed(error.localizedDescription)
         }
@@ -483,9 +593,16 @@ final class PlaybackController: ObservableObject {
     private func handle(_ s: TargetStatus, from source: PlaybackOutput) {
         guard source == output else { return }
         if let v = s.volume, v != volume, Date().timeIntervalSince(lastVolumeChange) > 1.5 { volume = v }
+        if let m = s.muted, m != deviceMuted, Date().timeIntervalSince(lastVolumeChange) > 1.5 { deviceMuted = m }
+        if s.reconnecting {
+            if nowPlaying != nil, !castReconnecting { castReconnecting = true }
+            return
+        }
+        if s.reconnected || s.error != nil, castReconnecting { castReconnecting = false }
         if s.reconnected {
             if case .preparing = phase { return }
-            if let item = nowPlaying { start(item, at: position, fresh: false) }
+            // Loaded again where it was, and left paused if it was paused.
+            if let item = nowPlaying { start(item, at: position, fresh: false, paused: phase == .paused) }
             return
         }
         guard let session, nowPlaying != nil else { return }
@@ -493,13 +610,17 @@ final class PlaybackController: ObservableObject {
         if let e = s.error {
             ErrorLog.record("Playback", "\(nowPlaying?.url.lastPathComponent ?? "?") on \(outputName): \(e)")
             phase = .failed(e)
+            setStreaming(false)   // a failed video doesn't keep the Mac awake
             return
         }
         if s.finished {
             itemFinished()
             return
         }
-        _ = session
+        // A failure stays on show until the video is started again. This Mac's player goes on
+        // reporting "paused" twice a second with a failed video, which put "Paused" over the
+        // message.
+        if case .failed = phase { return }
         if let t = s.time, !isScrubbing {
             position = min(max(0, session.fileTime(forDeviceTime: t)), max(duration, 0))
         }
@@ -560,12 +681,37 @@ final class PlaybackController: ObservableObject {
         mirror.follow(url: url, time: time, playing: phase == .playing)
     }
 
+    /// The queue is the playlist as it was when the video was started. Videos added, removed
+    /// or moved since are taken up as they happen, so Next, Previous and playing on by itself
+    /// follow the list on the screen. A playing video that is in no playlist any more keeps
+    /// the queue it had.
+    private func syncQueue(with playlists: [Playlist]) {
+        // The details panel's video goes the same way: a row taken out of the list isn't
+        // kept on show (the panel goes back to the playing video), and one pointed at its
+        // file's new place (Locate…) is shown from there.
+        if let shown = infoItem {
+            if let live = playlists.lazy.flatMap(\.items).first(where: { $0.id == shown.id }) {
+                if live != shown { infoItem = live }
+            } else if shown.id != nowPlaying?.id {
+                infoItem = nowPlaying
+            }
+        }
+        guard let current = nowPlaying,
+              let live = playlists.first(where: { $0.items.contains { $0.id == current.id } })?.items,
+              let index = live.firstIndex(where: { $0.id == current.id }) else { return }
+        if queue != live { queue = live }
+        if queueIndex != index { queueIndex = index }
+    }
+
     private func itemFinished() {
         guard let item = nowPlaying else { return }
         position = duration
         library.markWatched(item.url)
+        progressSetByHand = nil
         lastProgressSave = Date()
-        if Prefs.bool(Prefs.autoPlayNext), queueIndex + 1 < queue.count {
+        // Always on since 1.1.3: the switch in Settings was taken out at the user's word
+        // (2026-11-20), and a setting left off by an older version no longer stops it.
+        if queueIndex + 1 < queue.count {
             queueIndex += 1
             let next = queue[queueIndex]
             start(next, at: resumePoint(for: next), fresh: true)
@@ -575,7 +721,7 @@ final class PlaybackController: ObservableObject {
     }
 
     private func saveProgress(force: Bool) {
-        guard let item = nowPlaying, duration > 0 else { return }
+        guard let item = nowPlaying, duration > 0, progressSetByHand != item.url else { return }
         guard force || Date().timeIntervalSince(lastProgressSave) > 5 else { return }
         switch phase {
         case .playing, .paused, .buffering: break
@@ -599,8 +745,11 @@ final class PlaybackController: ObservableObject {
         case .idle, .failed:
             if let item = nowPlaying {
                 start(item, at: position, fresh: false)
-            } else if let playlist = library.selectedPlaylist, let first = playlist.items.first {
-                play(first, queue: playlist.items)
+            } else if let playlist = library.selectedPlaylist {
+                // The selected video, which is the one the details panel shows; with none in
+                // this playlist, its first.
+                let chosen = infoItem.flatMap { shown in playlist.items.first { $0.id == shown.id } } ?? playlist.items.first
+                if let chosen { play(chosen, queue: playlist.items) }
             }
         case .preparing:
             break
@@ -635,6 +784,11 @@ final class PlaybackController: ObservableObject {
 
     private func finishStop() {
         loadToken += 1
+        loadTask?.cancel()
+        castReconnecting = false
+        tracksOwed = nil
+        firstStartOwed = nil
+        progressSetByHand = nil
         target.stop()
         teardownSession()
         nowPlaying = nil
@@ -649,34 +803,50 @@ final class PlaybackController: ObservableObject {
     }
 
     func seek(to time: Double) {
-        guard let item = nowPlaying else { return }
+        // Not before the length is known (a video still opening): every place would be 0.
+        guard let item = nowPlaying, duration > 0 else { return }
         let t = min(max(0, time), max(0, duration - 1))
         position = t
-        guard session != nil else {
+        var preparing = false
+        if case .preparing = phase { preparing = true }
+        // Nothing loaded, or still loading: the load starts again from there. (A seek sent to
+        // a player still loading was undone when the load finished at its own place.)
+        guard let session, !preparing else {
+            start(item, at: t, fresh: false)
+            return
+        }
+        // The poster card sits in the stream where playback began. Played on from before it,
+        // the card would come round again mid-film, so that seek gets a stream without one.
+        if let card = session.cardFileTime, t < card {
             start(item, at: t, fresh: false)
             return
         }
         // The device has the whole playlist; the server starts converting wherever it reads.
-        target.seek(to: session?.deviceTime(forFileTime: t) ?? t)
+        target.seek(to: session.deviceTime(forFileTime: t))
         updateNowPlayingInfo()
     }
 
     func skip(_ delta: Double) { seek(to: position + delta) }
 
+    // Next and Previous select the video they start in the list and bring it into view
+    // (the user's request, 2026-11-20), when the playlist on show has it.
     func next() {
         guard queueIndex + 1 < queue.count else { return }
         queueIndex += 1
         let item = queue[queueIndex]
         start(item, at: resumePoint(for: item), fresh: true)
+        library.revealItem(item.id)
     }
 
     func previous() {
         if position > 8 || queueIndex == 0 {
             seek(to: 0)
+            if let item = nowPlaying { library.revealItem(item.id) }
             return
         }
         queueIndex -= 1
         start(queue[queueIndex], at: 0, fresh: true)
+        library.revealItem(queue[queueIndex].id)
     }
 
     var hasNext: Bool { queueIndex + 1 < queue.count }
@@ -690,6 +860,22 @@ final class PlaybackController: ObservableObject {
 
     func nudgeVolume(_ delta: Double) { setVolume(volume + delta) }
 
+    /// Mutes the device itself: a Chromecast's own mute, or this Mac's player.
+    func setMuted(_ on: Bool) {
+        deviceMuted = on
+        lastVolumeChange = Date()
+        target.setMuted(on)
+    }
+
+    /// Mark as Watched and Mark as Unwatched in the list. For the video playing the mark is
+    /// the last word: its place isn't saved over it as it plays on, nor when it stops.
+    func setWatched(_ watched: Bool, for items: [MediaItem]) {
+        for item in items {
+            if watched { library.markWatched(item.url) } else { library.clearProgress(item.url) }
+            if nowPlaying?.url == item.url { progressSetByHand = item.url }
+        }
+    }
+
     // MARK: Tracks and audio options (each restarts the stream at the current position)
 
     func selectAudio(_ index: Int) {
@@ -702,6 +888,25 @@ final class PlaybackController: ObservableObject {
         guard choice != subtitle else { return }
         subtitle = choice
         reload()
+    }
+
+    /// Whether the subtitle that is on is a picture one that OCR turns into text: what "Read
+    /// Subtitles Again" has to work on. Asked every time a menu is drawn, so it goes by what
+    /// is already known and never looks at a disk.
+    var canReadSubtitlesAgain: Bool {
+        guard let item = nowPlaying, let sub = subtitle, sub.isPicture, Prefs.bool(Prefs.ocrSubtitles) else { return false }
+        return PictureSubtitleOCR.supports(sub, media: item.url)
+    }
+
+    /// Throws away the text OCR kept for the subtitle that is on and reads its pictures again:
+    /// for a reading that came out wrong, or one made by an older Driftcast.
+    func readSubtitlesAgain() {
+        guard let item = nowPlaying, let sub = subtitle, sub.isPicture else { return }
+        Task {
+            await PictureSubtitleOCR.shared.forgetReading(of: sub, media: item.url)
+            guard nowPlaying?.id == item.id, subtitle == sub else { return }
+            reload()
+        }
     }
 
     /// Attaches a subtitle file to a video (the playing one unless another is given) and, when
@@ -738,6 +943,10 @@ final class PlaybackController: ObservableObject {
     }
 
     /// Asks for a subtitle file for a video (the playing one unless another is given).
+    /// The video the Subtitles menu's Add Subtitle File… and Find Subtitles Online… are for:
+    /// the one playing, else the one selected in the list (shown in the details panel).
+    var subtitleTarget: MediaItem? { nowPlaying ?? infoItem }
+
     func chooseSubtitleFile(for item: MediaItem? = nil) {
         guard let item = item ?? nowPlaying else { return }
         let panel = NSOpenPanel()
@@ -794,6 +1003,7 @@ final class PlaybackController: ObservableObject {
 
     func shutdown() {
         saveProgress(force: true)
+        loadTask?.cancel()
         target.stop()
         teardownSession()
         castTarget?.disconnect()
@@ -856,7 +1066,8 @@ final class PlaybackController: ObservableObject {
                                                     season: title.season, episode: title.episode, videoName: item.baseName)
                 }
                 // Listed best first: made from this file, then for its release, then most downloaded.
-                guard let best = found.first else { return nil }
+                // One that only covers the foreign-language lines isn't the film's subtitles.
+                guard let best = found.first(where: { !$0.foreignPartsOnly }) else { return nil }
                 return try await client.download(best, for: item.url)
             } catch {
                 return nil
@@ -906,9 +1117,19 @@ final class PlaybackController: ObservableObject {
         }
     }
 
+    /// A video was given another name in the list. When it is the one playing, the bar, the
+    /// video window's title and the TV's panel take the new name now. A Chromecast keeps the
+    /// name it was sent until the video is next started.
+    func nameChanged(for url: URL) {
+        guard let item = nowPlaying, item.url == url else { return }
+        objectWillChange.send()
+        tvLines = item.tvLines(lookedUp: tvLookedUp)
+        updateNowPlayingInfo()
+    }
+
     private func updateNowPlayingInfo() {
         guard let item = nowPlaying else { return }
-        let lines = tvLines ?? item.parsedTitle.tvLines(lookedUp: false)
+        let lines = tvLines ?? item.tvLines(lookedUp: false)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: lines.title,
             MPMediaItemPropertyPlaybackDuration: duration,

@@ -64,9 +64,12 @@ enum CastProto {
             case 0:
                 guard varint() != nil else { return nil }
             case 2:
-                guard let len = varint(), i + Int(len) <= bytes.count else { return nil }
-                let chunk = Data(bytes[i..<(i + Int(len))])
-                i += Int(len)
+                // The length is checked against what is left before it becomes an Int: a varint
+                // of 2^63 or more, or one just below that added to the position, would trap.
+                guard let len = varint(), len <= UInt64(bytes.count - i) else { return nil }
+                let end = i + Int(len)
+                let chunk = Data(bytes[i..<end])
+                i = end
                 let s = String(decoding: chunk, as: UTF8.self)
                 switch field {
                 case 2: msg.source = s
@@ -84,8 +87,26 @@ enum CastProto {
     }
 }
 
+/// What CastTarget needs from a connection: a CastChannel to the device, or a stand-in in the
+/// harness that answers the way a receiver does.
+protocol CastLink: AnyObject, Sendable {
+    var onMessage: (@Sendable (CastProto.Message) -> Void)? { get set }
+    var onEvent: (@Sendable (CastChannel.Event) -> Void)? { get set }
+    /// Our address as the device sees it; media URLs must use it.
+    var localIPv4: String? { get }
+    func start()
+    func send(namespace: String, destination: String, source: String, payload: [String: Any])
+    func close()
+}
+
+extension CastLink {
+    func send(namespace: String, destination: String, payload: [String: Any]) {
+        send(namespace: namespace, destination: destination, source: "sender-0", payload: payload)
+    }
+}
+
 /// One TLS connection to a Cast device, delivering decoded messages.
-final class CastChannel: @unchecked Sendable {
+final class CastChannel: CastLink, @unchecked Sendable {
     enum Event: Sendable {
         case ready
         case failed(String)
@@ -96,7 +117,12 @@ final class CastChannel: @unchecked Sendable {
 
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "driftcast.cast.channel")
+    /// No more events or messages are passed on (closing, failed or canceled). Used on `queue`.
     private var closed = false
+    private var closing = false
+    private var closeFinished = false
+    /// Connections that have been asked to close and are still sending their last frames.
+    private static let pendingCloses = DispatchGroup()
 
     init(endpoint: NWEndpoint) {
         let tls = NWProtocolTLS.Options()
@@ -158,11 +184,39 @@ final class CastChannel: @unchecked Sendable {
         })
     }
 
+    /// Closes the connection once every frame already sent has been handed to the network, so
+    /// that the STOP and CLOSE sent just before go out rather than being cut off with the socket.
+    /// A connection that can't send any more (never ready, or gone) is canceled after two
+    /// seconds regardless.
     func close() {
+        Self.pendingCloses.enter()
         queue.async { [self] in
+            guard !closing else { Self.pendingCloses.leave(); return }
+            closing = true
+            let wasOpen = !closed
             closed = true
-            connection.cancel()
+            guard wasOpen else { finishClose(); return }
+            // Sends go out in order, so this one is processed only after those before it.
+            connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [self] _ in
+                finishClose()
+            })
+            queue.asyncAfter(deadline: .now() + 2) { [self] in finishClose() }
         }
+    }
+
+    /// On `queue`; the first of the final send and the two-second limit gets here.
+    private func finishClose() {
+        guard !closeFinished else { return }
+        closeFinished = true
+        connection.cancel()
+        Self.pendingCloses.leave()
+    }
+
+    /// Waits up to `seconds` for connections being closed to send their last frames. At quit the
+    /// process ends as soon as the app delegate returns, which would drop the STOP that takes
+    /// the video off the TV; this gives it a moment to leave this Mac.
+    static func waitForClosing(upTo seconds: Double = 0.5) {
+        _ = pendingCloses.wait(timeout: .now() + seconds)
     }
 
     private func fail(_ reason: String) {
@@ -174,7 +228,7 @@ final class CastChannel: @unchecked Sendable {
 
     private func readFrame() {
         connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self, !self.closed else { return }
             if let error { self.fail(error.localizedDescription); return }
             guard let data, data.count == 4 else {
                 if isComplete { self.fail("Device closed the connection") }
@@ -183,6 +237,9 @@ final class CastChannel: @unchecked Sendable {
             let length = data.reduce(0) { $0 << 8 | Int($1) }
             guard length > 0, length < 1 << 20 else { self.fail("Bad frame length"); return }
             self.connection.receive(minimumIncompleteLength: length, maximumLength: length) { body, _, _, error in
+                // A connection being closed still reads until it is canceled; what it reads now
+                // belongs to a session that is over.
+                if self.closed { return }
                 if let error { self.fail(error.localizedDescription); return }
                 guard let body, body.count == length else { self.fail("Short frame"); return }
                 if let msg = CastProto.decode(body) { self.onMessage?(msg) }

@@ -37,32 +37,49 @@ struct VobSubIDX {
 
     // MARK: - Methods
 
+    /// Reads the palette and, for one language, each picture's time and place in the .sub.
+    ///
+    /// Lines are split on any line break, so an index written on Windows (CRLF, the usual kind) is read
+    /// rather than taken as one long line with nothing in it. An index can hold several languages, each
+    /// an `id:` section with its own timestamps; only the one `langidx:` names (or the first) is read,
+    /// where every section used to be merged into one track read in the last section's language.
     private mutating func parseIdxFile(idxData: String) throws {
-        let lines = idxData.split(separator: "\n")
+        let lines = idxData.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-        for line in lines {
-            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Handle palette line
-            if trimmedLine.starts(with: "palette:") {
-                palette = parsePalette(line: trimmedLine)
-                continue
-            } else if trimmedLine.starts(with: "id:") {
-                language = String(trimmedLine.split(separator: " ")[1].dropLast())
-                continue
-            } else if !trimmedLine.starts(with: "timestamp:") {
-                continue
-            }
-
-            // Handle timestamp and filepos in one go
-            guard let timestamp = extractTimestamp(from: trimmedLine),
-                  let offset = extractOffset(from: trimmedLine)
-            else {
-                continue
-            }
-            offsets.append(offset)
-            timestamps.append(timestamp)
+        var chosenIndex: Int?
+        for line in lines where line.hasPrefix("langidx:") {
+            chosenIndex = Int(line.dropFirst("langidx:".count).trimmingCharacters(in: .whitespaces))
         }
+        let sections = lines.compactMap(Self.parseLanguageLine)
+        let chosen = sections.first { $0.index == chosenIndex } ?? sections.first
+
+        // Timestamps before any `id:` line count only when the index has no sections at all.
+        var inChosenSection = chosen == nil
+        for line in lines {
+            if line.hasPrefix("palette:") {
+                palette = parsePalette(line: line)
+            } else if let section = Self.parseLanguageLine(line) {
+                inChosenSection = section.index == chosen?.index
+                if inChosenSection {
+                    language = section.language
+                }
+            } else if inChosenSection, line.hasPrefix("timestamp:"),
+                      let timestamp = extractTimestamp(from: line), let offset = extractOffset(from: line) {
+                offsets.append(offset)
+                timestamps.append(timestamp)
+            }
+        }
+    }
+
+    /// "id: en, index: 0" as ("en", 0). A bare "id:" has no language and is read as index 0's.
+    private static func parseLanguageLine(_ line: String) -> (language: String?, index: Int)? {
+        guard line.hasPrefix("id:") else { return nil }
+        let fields = line.dropFirst("id:".count).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let code = fields.first.flatMap { $0.isEmpty ? nil : $0 }
+        let index = fields.dropFirst().first { $0.hasPrefix("index:") }
+            .flatMap { Int($0.dropFirst("index:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
+        return (code, index)
     }
 
     /// Extract timestamp from a line starting with "timestamp:"

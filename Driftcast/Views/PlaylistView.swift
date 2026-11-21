@@ -7,98 +7,221 @@ struct PlaylistView: View {
     /// Videos waiting for the person to confirm that their files should go to the Trash.
     @State private var filesToDelete: [MediaItem] = []
     @State private var deleteProblem: String?
-    @AppStorage(Prefs.showDetails) private var showDetails = false
+    /// The video whose title is a text box, and what has been typed into it.
+    @State private var editingID: MediaItem.ID?
+    @State private var draftTitle = ""
+    @FocusState private var titleFocused: Bool
+    /// Whether that text box has had the keyboard yet. Losing the keyboard ends the edit, and
+    /// a loss noted before the box ever had it belongs to whatever had it before.
+    @State private var titleHadFocus = false
+    /// Gives the list the keyboard back when that text box closes.
+    @State private var listKeyboard = ListKeyboard()
+    @AppStorage(Prefs.showDetails) private var showDetails = true
 
     var body: some View {
         if let playlist = library.selectedPlaylist {
-            List(selection: $selection) {
-                ForEach(playlist.items) { item in
-                    MediaRow(item: item, isCurrent: player.nowPlaying?.id == item.id)
-                        .tag(item.id)
+            ScrollViewReader { proxy in
+                List(selection: $selection) {
+                    ForEach(playlist.items) { item in
+                        MediaRow(item: item, isCurrent: player.nowPlaying?.id == item.id,
+                                 titleEditor: editingID == item.id ? AnyView(titleEditor) : nil)
+                            .tag(item.id)
+                            // Dragged onto a playlist in the sidebar, or below them for a new one.
+                            .itemProvider { DraggedVideo(playlist: playlist.id, item: item.id).itemProvider() }
+                    }
+                    .onMove {
+                        // The drag ended here, in the list: its rows go to no playlist.
+                        _ = DraggedVideo.takePending()
+                        library.move(in: playlist.id, from: $0, to: $1)
+                    }
                 }
-                .onMove { library.move(in: playlist.id, from: $0, to: $1) }
-            }
-            .contextMenu(forSelectionType: MediaItem.ID.self) { ids in
-                contextMenu(ids, in: playlist)
-            } primaryAction: { ids in
-                if let item = playlist.items.first(where: { ids.contains($0.id) }) {
+                .contextMenu(forSelectionType: MediaItem.ID.self) { ids in
+                    contextMenu(ids, in: playlist)
+                } primaryAction: { ids in
+                    if let item = playlist.items.first(where: { ids.contains($0.id) }) {
+                        player.play(item, queue: playlist.items)
+                    }
+                }
+                .dropDestination(for: URL.self) { urls, _ in
+                    !library.add(urls, to: playlist.id).isEmpty
+                }
+                // Not while a title is being typed: Delete then belongs to the text.
+                .onDeleteCommand { if editingID == nil { library.remove(selection, from: playlist.id) } }
+                .onChange(of: selection) { ids in
+                    // The details panel follows the selection; with nothing selected it shows the
+                    // playing video.
+                    if let item = playlist.items.first(where: { ids.contains($0.id) }) { player.infoItem = item }
+                }
+                .modifier(ListKeys(isTyping: editingID != nil, onSpace: { player.togglePause() }, onReturn: {
+                    guard let item = playlist.items.first(where: { selection.contains($0.id) }) else { return false }
                     player.play(item, queue: playlist.items)
+                    return true
+                }))
+                .background(SelectAllKey { selectAll(in: playlist) })
+                .background(TitleHold(keyboard: listKeyboard, isOnlySelection: { [chosen = $selection] id in
+                    chosen.wrappedValue == [id]
+                }) { id in
+                    if let item = playlist.items.first(where: { $0.id == id }) { beginEdit(item) }
+                })
+                // The text box goes with its row: another playlist has no row for it.
+                .onChange(of: library.selection) { _ in commitEdit() }
+                // Nor has a video that was taken out of the list while its title was open
+                // (removed from the menu, its file deleted): the box would stay as state with
+                // no row, and Space and Return would go on being left to it.
+                .onChange(of: playlist.items.count) { _ in
+                    if let id = editingID, !playlist.items.contains(where: { $0.id == id }) { cancelEdit() }
                 }
-            }
-            .dropDestination(for: URL.self) { urls, _ in
-                !library.add(urls, to: playlist.id).isEmpty
-            }
-            .onDeleteCommand { library.remove(selection, from: playlist.id) }
-            .onChange(of: selection) { ids in
-                // The details panel follows the selection; with nothing selected it shows the
-                // playing video.
-                if let item = playlist.items.first(where: { ids.contains($0.id) }) { player.infoItem = item }
-            }
-            .modifier(ListKeys(onSpace: { player.togglePause() }, onReturn: {
-                guard let item = playlist.items.first(where: { selection.contains($0.id) }) else { return false }
-                player.play(item, queue: playlist.items)
-                return true
-            }))
-            .background(SelectAllKey { selectAll(in: playlist) })
-            .overlay {
-                if playlist.items.isEmpty {
-                    EmptyStateView(title: "Drop Videos Here", systemImage: "film.stack",
-                                   message: "Drag in files or folders, or click Open to choose a video from your Mac and play it. MKV, MP4, AVI, MOV and most other formats work.") {
-                        HStack {
-                            Button("Open…") { player.chooseAndOpen(into: playlist.id) }
-                            Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
+                .overlay {
+                    if playlist.items.isEmpty {
+                        EmptyStateView(title: "Drop Videos Here", systemImage: "film.stack",
+                                       message: "Drag in files or folders, or click Open to choose a video from your Mac and play it. MKV, MP4, AVI, MOV and most other formats work.") {
+                            HStack {
+                                Button("Open…") { player.chooseAndOpen(into: playlist.id) }
+                                Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
+                            }
                         }
                     }
                 }
-            }
-            .alert(filesToDelete.count == 1 ? "Do you really want to delete this file?" : "Do you really want to delete these \(filesToDelete.count) files?",
-                   isPresented: Binding(get: { !filesToDelete.isEmpty }, set: { if !$0 { filesToDelete = [] } }),
-                   presenting: filesToDelete) { items in
-                Button("Move to Trash", role: .destructive) { deleteFiles(items) }
-                Button("Cancel", role: .cancel) {}
-            } message: { items in
-                if items.count == 1 {
-                    Text("“\(items[0].url.lastPathComponent)” will be moved to the Trash and taken out of your playlists. You can get it back from the Trash.")
-                } else {
-                    Text("The files will be moved to the Trash and taken out of your playlists. You can get them back from the Trash.")
-                }
-            }
-            .alert("Some files couldn't be deleted", isPresented: Binding(get: { deleteProblem != nil }, set: { if !$0 { deleteProblem = nil } })) {
-                Button("OK") {}
-            } message: {
-                Text(deleteProblem ?? "")
-            }
-            .navigationTitle(playlist.name)
-            .navigationSubtitle(playlist.items.count == 1 ? "1 video" : "\(playlist.items.count) videos")
-            .toolbar {
-                // Beside the playlist's name, the list they add to, rather than with the
-                // playback controls on the right. The folder is the Mac's picture for opening
-                // a file: it plays what is chosen. The plus only lists it.
-                ToolbarItem(placement: .navigation) {
-                    Button { player.chooseAndOpen(into: playlist.id) } label: {
-                        Label("Open", systemImage: "folder")
+                .alert(filesToDelete.count == 1 ? "Do you really want to delete this file?" : "Do you really want to delete these \(filesToDelete.count) files?",
+                       isPresented: Binding(get: { !filesToDelete.isEmpty }, set: { if !$0 { filesToDelete = [] } }),
+                       presenting: filesToDelete) { items in
+                    Button("Move to Trash", role: .destructive) { deleteFiles(items) }
+                    Button("Cancel", role: .cancel) {}
+                } message: { items in
+                    if items.count == 1 {
+                        Text("“\(items[0].url.lastPathComponent)” will be moved to the Trash and taken out of your playlists. You can get it back from the Trash.")
+                    } else {
+                        Text("The files will be moved to the Trash and taken out of your playlists. You can get them back from the Trash.")
                     }
-                    .help("Open a video from your Mac and play it")
                 }
-                ToolbarItem(placement: .navigation) {
-                    Button { library.presentOpenPanel(into: playlist.id) } label: {
-                        Label("Add Videos", systemImage: "plus")
+                .alert("Some files couldn't be deleted", isPresented: Binding(get: { deleteProblem != nil }, set: { if !$0 { deleteProblem = nil } })) {
+                    Button("OK") {}
+                } message: {
+                    Text(deleteProblem ?? "")
+                }
+                .navigationTitle(playlist.name)
+                .navigationSubtitle(playlist.items.count == 1 ? "1 video" : "\(playlist.items.count) videos")
+                .toolbar {
+                    // Beside the playlist's name, the list they add to, rather than with the
+                    // playback controls on the right. The folder is the Mac's picture for opening
+                    // a file: it plays what is chosen. The plus only lists it.
+                    ToolbarItem(placement: .navigation) {
+                        Button { player.chooseAndOpen(into: playlist.id) } label: {
+                            Label("Open", systemImage: "folder")
+                        }
+                        .help("Open a video from your Mac and play it")
                     }
-                    .help("Add videos or folders to this playlist without playing them")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    OutputPicker()
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Toggle(isOn: $showDetails) {
-                        Label("Details", systemImage: "sidebar.trailing")
+                    ToolbarItem(placement: .navigation) {
+                        Button { library.presentOpenPanel(into: playlist.id) } label: {
+                            Label("Add Videos", systemImage: "plus")
+                        }
+                        .help("Add videos or folders to this playlist without playing them")
                     }
-                    .help("Show the poster, plot, ratings and file details")
+                    ToolbarItem(placement: .primaryAction) {
+                        OutputPicker()
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Toggle(isOn: $showDetails) {
+                            Label("Details", systemImage: "sidebar.trailing")
+                        }
+                        .help("Show the poster, plot, ratings and file details")
+                    }
+                }
+                // Videos just added (dropped, chosen, opened): the first of them is selected
+                // and brought into view, so a drop at the foot of a long list isn't a guess.
+                .onChange(of: library.reveal) { reveal in
+                    guard let id = reveal?.item,
+                          library.selectedPlaylist?.items.contains(where: { $0.id == id }) == true else { return }
+                    // Once the list has the new rows. Without animation: the list only selects a
+                    // row it has laid out, and an animated scroll gets there too late for that.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(id, anchor: .center)
+                        selection = [id]
+                    }
+                    // Rows not yet laid out are taken to be shorter than they are, so the first
+                    // scroll of a long list stops short; the second pass has measured the rows
+                    // the first one passed. The last pass asks only for the row to be in view,
+                    // which goes by where the row really is: centering the last row of a list
+                    // already at its foot could leave it half cut off, a row's height short.
+                    for (delay, anchor) in [(0.15, UnitPoint.center), (0.4, nil)] as [(Double, UnitPoint?)] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            if selection == [id] { proxy.scrollTo(id, anchor: anchor) }
+                        }
+                    }
                 }
             }
         } else {
             EmptyStateView(title: "No Playlist Selected", systemImage: "list.bullet.rectangle")
         }
+    }
+
+    // MARK: Naming a video
+
+    /// The title as a text box, in the row of the video being named. Built here, in the view
+    /// that holds its keyboard focus, the way the sidebar builds a playlist's.
+    private var titleEditor: some View {
+        TextField("Title", text: $draftTitle)
+            .textFieldStyle(.roundedBorder)
+            .focused($titleFocused)
+            // Return and Esc end the typing, and the keyboard goes back to the list for the
+            // arrow keys, Space and Return. (Clicking elsewhere ends it too, and the keyboard
+            // then belongs to what was clicked.)
+            .onSubmit { commitEdit(); listKeyboard.take() }
+            .onExitCommand { cancelEdit(); listKeyboard.take() }
+            .onChange(of: titleFocused) { focused in
+                if focused { titleHadFocus = true } else if titleHadFocus { commitEdit() }
+            }
+            // The box is taller than the line of text it stands in for, and its text sits in
+            // from its edge: the row keeps its height and the name stays about where it was.
+            .padding(.vertical, -3)
+            .padding(.leading, -5)
+    }
+
+    /// Turns a video's title into a text box holding its name, selected to type over: Rename
+    /// in the right-click menu, a press held on the title, and a click on the title of the
+    /// selected video (`TitlePress`).
+    private func beginEdit(_ item: MediaItem) {
+        commitEdit()   // a title still open keeps what was typed
+        draftTitle = item.displayName
+        titleHadFocus = false
+        // From a box still open on another row this is still true, and setting it true again
+        // would move nothing: the new box would open without the keyboard.
+        titleFocused = false
+        editingID = item.id
+        DispatchQueue.main.async { titleFocused = true }
+    }
+
+    /// Return, or the keyboard going elsewhere: the video takes the name typed. Nothing typed
+    /// gives it back the name made from its file.
+    private func commitEdit() {
+        guard let id = editingID else { return }
+        editingID = nil
+        titleHadFocus = false
+        guard let item = library.playlists.lazy.flatMap(\.items).first(where: { $0.id == id }) else { return }
+        library.setName(draftTitle, for: item.url)
+        player.nameChanged(for: item.url)
+    }
+
+    /// Esc: the name stays as it was.
+    private func cancelEdit() {
+        editingID = nil
+        titleHadFocus = false
+    }
+
+    /// Locate…: asks where a missing video's file is now, starting in the folder it was in or
+    /// the nearest one above it that still exists.
+    private func locate(_ item: MediaItem) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Locate"
+        panel.message = "Choose the file for “\(item.displayName)”. It was at \(item.url.path)."
+        var folder = item.url.deletingLastPathComponent()
+        while folder.path != "/", !FileManager.default.fileExists(atPath: folder.path) { folder.deleteLastPathComponent() }
+        panel.directoryURL = folder
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        commitEdit()
+        library.relocate(item, to: url)
     }
 
     /// Every video in the playlist: ⌘A, and Select All in the right-click menus.
@@ -128,7 +251,9 @@ struct PlaylistView: View {
             if isCurrent {
                 Button(player.isPlaying ? "Pause" : "Resume") { player.togglePause() }
                 Button("Stop") { player.stop() }
-            } else if let resume = library.resumePosition(for: item.url) {
+            } else if Prefs.bool(Prefs.resumePlayback), let resume = library.resumePosition(for: item.url) {
+                // Only with "resume where I left off" on: with it off the video starts at 0,
+                // and the menu promised a place it wouldn't go to.
                 Button("Resume from \(formatTime(resume))") { player.play(item, queue: playlist.items) }
             } else {
                 Button("Play") { player.play(item, queue: playlist.items) }
@@ -140,14 +265,32 @@ struct PlaylistView: View {
                 Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
             }
             Divider()
-            Button("Details") { player.infoItem = item; showDetails = true }
+            Button("Details") {
+                player.infoItem = item
+                DetailsWindow.shared.show(item, player: player, library: library)
+            }
+            if items.count == 1 {
+                Button("Rename") { beginEdit(item) }
+            }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(items.map(\.url)) }
+            // A file that was moved or renamed in the Finder: point the row at where it is now,
+            // keeping its place, its watched mark, its subtitles and its name.
+            if items.contains(where: { !$0.exists }) {
+                if items.count == 1 {
+                    Button("Locate…") { locate(item) }
+                }
+                Button("Remove Missing Videos") {
+                    commitEdit()
+                    let removed = library.removeMissing(from: playlist.id)
+                    selection.subtract(removed.map(\.id))
+                }
+            }
             Divider()
             if items.contains(where: { library.watched.contains($0.url.path) || library.progress[$0.url.path] != nil }) {
-                Button("Mark as Unwatched") { items.forEach { library.clearProgress($0.url) } }
+                Button("Mark as Unwatched") { player.setWatched(false, for: items) }
             }
             if items.contains(where: { !library.watched.contains($0.url.path) }) {
-                Button("Mark as Watched") { items.forEach { library.markWatched($0.url) } }
+                Button("Mark as Watched") { player.setWatched(true, for: items) }
             }
             Menu("Move to Playlist") {
                 ForEach(library.playlists.filter { $0.id != playlist.id }) { other in
@@ -164,6 +307,7 @@ struct PlaylistView: View {
             if items.count < playlist.items.count {
                 Button("Select All") { selectAll(in: playlist) }
             }
+            sortMenu(for: playlist)
             Button("Add Videos…") { library.presentOpenPanel(into: playlist.id) }
             Divider()
             Button("Remove from Playlist") { library.remove(ids, from: playlist.id) }
@@ -174,7 +318,24 @@ struct PlaylistView: View {
             if !playlist.items.isEmpty {
                 Button("Select All") { selectAll(in: playlist) }
             }
+            sortMenu(for: playlist)
             Button("New Playlist") { library.newPlaylist() }
+        }
+    }
+
+    /// Sort, in both right-click menus: puts the playlist in order once. Nothing to offer
+    /// with fewer than two videos.
+    @ViewBuilder
+    private func sortMenu(for playlist: Playlist) -> some View {
+        if playlist.items.count > 1 {
+            Menu("Sort") {
+                ForEach(PlaylistOrder.allCases, id: \.self) { order in
+                    Button(order.label) {
+                        commitEdit()
+                        library.sort(playlist.id, by: order)
+                    }
+                }
+            }
         }
     }
 }
@@ -182,14 +343,20 @@ struct PlaylistView: View {
 /// Space and Return on the playlist. `onKeyPress` is macOS 14's way; before it, a key monitor
 /// that only acts while a list has the keyboard, so typing in a text field is left alone.
 private struct ListKeys: ViewModifier {
+    /// A video's title is being typed in the list: both keys are the text's.
+    var isTyping = false
     let onSpace: () -> Void
     let onReturn: () -> Bool
 
     func body(content: Content) -> some View {
         if #available(macOS 14.0, *) {
             content
-                .onKeyPress(.space) { onSpace(); return .handled }
-                .onKeyPress(.return) { onReturn() ? .handled : .ignored }
+                .onKeyPress(.space) {
+                    if isTyping { return .ignored }
+                    onSpace()
+                    return .handled
+                }
+                .onKeyPress(.return) { !isTyping && onReturn() ? .handled : .ignored }
         } else {
             content.background(ListKeyMonitor(onSpace: onSpace, onReturn: onReturn))
         }
@@ -277,11 +444,18 @@ private struct SelectAllKey: NSViewRepresentable {
 struct MediaRow: View {
     let item: MediaItem
     let isCurrent: Bool
+    /// The text box that stands in for the title while the video is being named.
+    var titleEditor: AnyView? = nil
     @EnvironmentObject private var library: Library
     @State private var info: MediaInfo?
     @State private var poster: NSImage?
     @State private var details: MovieDetails?
     @State private var failed = false
+    /// Whether the file is there, asked away from the main thread and kept: asked on every
+    /// redraw of every row, a disk that had stopped answering froze the whole window.
+    @State private var missing = false
+    /// Counted up to look at the file again (Driftcast brought forward after the Finder).
+    @State private var looks = 0
 
     var body: some View {
         HStack(spacing: 12) {
@@ -301,8 +475,14 @@ struct MediaRow: View {
                     if isCurrent {
                         Image(systemName: "speaker.wave.2.fill").foregroundStyle(.tint).font(.caption)
                     }
-                    TitleLine(title: item.parsedTitle)
-                        .fontWeight(isCurrent ? .semibold : .regular)
+                    if let titleEditor {
+                        titleEditor
+                    } else {
+                        TitleLine(item: item)
+                            .fontWeight(isCurrent ? .semibold : .regular)
+                            // Where a press is held, or the selected video clicked, to name it (`TitleHold`).
+                            .background(TitleMarker(id: item.id).allowsHitTesting(false))
+                    }
                 }
                 Text(detail)
                     .font(.caption)
@@ -333,8 +513,20 @@ struct MediaRow: View {
         .padding(.vertical, 3)
         // Finished videos fade back so what's left to watch stands out.
         .opacity(isWatched && !isCurrent ? 0.45 : 1)
-        .task(id: item.url) {
-            guard item.exists else { failed = true; return }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // A file found again, or gone, while Driftcast was behind another app.
+            let url = item.url, wasThere = !missing
+            Task {
+                let there = await Self.fileExists(url)
+                if there != wasThere, url == item.url { looks += 1 }
+            }
+        }
+        .task(id: RowKey(url: item.url, looks: looks)) {
+            let there = await Self.fileExists(item.url)
+            if Task.isCancelled { return }
+            missing = !there
+            failed = false
+            guard there else { failed = true; return }
             do {
                 let i = try await MediaProbe.shared.probe(item.url)
                 info = i
@@ -353,6 +545,15 @@ struct MediaRow: View {
         }
     }
 
+    private struct RowKey: Hashable {
+        let url: URL
+        let looks: Int
+    }
+
+    private nonisolated static func fileExists(_ url: URL) async -> Bool {
+        await Task.detached(priority: .utility) { FileManager.default.fileExists(atPath: url.path) }.value
+    }
+
     private var isWatched: Bool { library.watched.contains(item.url.path) }
 
     private var length: String? {
@@ -366,7 +567,7 @@ struct MediaRow: View {
     }
 
     private var detail: String {
-        if !item.exists { return "File not found" }
+        if missing { return "File not found" }
         if failed { return "Couldn't read this file" }
         guard let info else { return item.url.deletingLastPathComponent().lastPathComponent }
         var parts: [String] = []

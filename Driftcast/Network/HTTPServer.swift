@@ -197,10 +197,12 @@ private final class HTTPConnection: @unchecked Sendable {
             headers["Content-Length"] = "0"
         case .data(let d):
             // Players sometimes ask for part of an init segment or a playlist with a Range
-            // header; honouring it is cheap and some refuse a 200 when they asked for a 206.
+            // header; honoring it is cheap and some refuse a 200 when they asked for a 206.
+            // Only for a 200: a 503 or 404 sliced into a 206 told the player its segment had
+            // arrived, made of the error's text, instead of a failure it could try again.
             let size = UInt64(d.count)
             headers["Accept-Ranges"] = "bytes"
-            if let range = req.headers["range"], let (s, e) = Self.parseRange(range, size: size) {
+            if status == 200, let range = req.headers["range"], let (s, e) = Self.parseRange(range, size: size) {
                 if s >= size || e < s {
                     status = 416
                     headers["Content-Range"] = "bytes */\(size)"

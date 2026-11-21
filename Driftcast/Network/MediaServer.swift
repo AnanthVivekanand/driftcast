@@ -58,6 +58,17 @@ final class MediaServer: @unchecked Sendable {
         lock.lock(); sessions[session.id] = nil; lock.unlock()
     }
 
+    /// Stops and forgets every stream but `keep`. At quit this is what ends the ffmpeg of a
+    /// stream still starting, which the player doesn't hold yet: one frozen by pacing would
+    /// otherwise stay until the Mac restarted, its folder gone and with it the way to find it.
+    func stopAll(except keep: StreamSession? = nil) {
+        lock.lock()
+        let ending = sessions.values.filter { $0 !== keep }
+        for s in ending { sessions[s.id] = nil }
+        lock.unlock()
+        ending.forEach { $0.stop() }
+    }
+
     private func session(_ id: String) -> StreamSession? {
         lock.lock(); defer { lock.unlock() }
         return sessions[id]
@@ -147,6 +158,7 @@ final class MediaServer: @unchecked Sendable {
                 let data = try await session.segment(n)
                 return HTTPResponse(status: 200, headers: ["Content-Type": Self.contentType(forExtension: "m4s")], body: .data(data))
             } catch {
+                session.logFailure(segment: n, error: error)
                 return HTTPResponse(status: 503, headers: ["Content-Type": "text/plain"], body: .data(Data(error.localizedDescription.utf8)))
             }
         }

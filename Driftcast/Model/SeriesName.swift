@@ -30,24 +30,50 @@ enum SeriesName {
     /// such as "[Group]" removed from the front.
     static func normalize(_ name: String) -> String {
         var s = name.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
-        while let r = s.range(of: #"^\s*[\[\(][^\]\)]*[\]\)]\s*"#, options: .regularExpression) { s.removeSubrange(r) }
+        while let r = s.range(of: #"^\s*[\[\(][^\]\)]*[\]\)]\s*"#, options: .regularExpression),
+              isReleaseGroup(String(s[r]), before: s[r.upperBound...]) {
+            s.removeSubrange(r)
+        }
         return s.split(separator: " ").joined(separator: " ")
     }
 
-    private static func tidy(_ title: String) -> String? {
+    /// Whether a bracket at the front of a name holds a release group ("[Group] Show - 03")
+    /// rather than the start of the title. "(500) Days of Summer" opens with a number in round
+    /// brackets, and "[REC] (2007)" has nothing after its bracket but a year and release tags:
+    /// taken as groups, the first lost its number and the second its whole name.
+    private static func isReleaseGroup(_ group: String, before rest: Substring) -> Bool {
+        let inside = group.trimmingCharacters(in: CharacterSet(charactersIn: " []()"))
+        let isYear = inside.count == 4 && (inside.hasPrefix("19") || inside.hasPrefix("20"))
+        if group.trimmingCharacters(in: .whitespaces).hasPrefix("("), !inside.isEmpty,
+           inside.allSatisfy(\.isNumber), !isYear { return false }
+        return rest.split(separator: " ").contains { $0.contains(where: \.isLetter) && !MediaTitle.isReleaseTag($0) }
+    }
+
+    /// A show's name, trimmed. Before "S01E02" or "1x02" a name can be a number or a single
+    /// letter ("24", "1883", "9-1-1", "V"); before the looser markers ("Part 2", " - 03") it
+    /// needs letters, so that a bare number isn't taken for a show.
+    private static func tidy(_ title: String, numbersAllowed: Bool = false) -> String? {
         let trimmed = title.trimmingCharacters(in: CharacterSet(charactersIn: " -–:,([{#"))
-        guard trimmed.count >= 2, trimmed.contains(where: \.isLetter) else { return nil }
-        // All-lowercase file names read better capitalised as a playlist name.
-        return trimmed == trimmed.lowercased() ? trimmed.capitalized : trimmed
+        if numbersAllowed {
+            guard trimmed.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        } else {
+            guard trimmed.count >= 2, trimmed.contains(where: \.isLetter) else { return nil }
+        }
+        // All-lowercase file names read better capitalized as a playlist name.
+        return trimmed == trimmed.lowercased() ? MediaTitle.capitalizedWords(trimmed) : trimmed
     }
 
     /// The show's name when the file name carries an episode marker, otherwise nil.
     static func title(fromFileName name: String) -> String? {
         let s = normalize(name)
         let whole = NSRange(s.startIndex..., in: s)
-        let first = markers.compactMap { $0.firstMatch(in: s, range: whole)?.range.location }.min()
-        guard let first, let end = Range(NSRange(location: 0, length: first), in: s) else { return nil }
-        return tidy(String(s[end]))
+        // The marker that comes first in the name, and which kind it is.
+        let found = markers.enumerated().compactMap { kind, marker in
+            marker.firstMatch(in: s, range: whole).map { (kind: kind, at: $0.range.location) }
+        }
+        guard let first = found.min(by: { ($0.at, $0.kind) < ($1.at, $1.kind) }),
+              let end = Range(NSRange(location: 0, length: first.at), in: s) else { return nil }
+        return tidy(String(s[end]), numbersAllowed: first.kind < 2)
     }
 
     /// For names without episode markers ("Lecture 01", "Lecture 02"): what they all start

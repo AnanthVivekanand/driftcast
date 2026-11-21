@@ -175,13 +175,29 @@ struct StreamPlan: Sendable {
         return false
     }
 
-    /// The picture size the device receives: the source's, or scaled to the conversion height.
+    /// The picture size the device receives: the source's, or what the conversion's scaler makes
+    /// of it (the height trimmed to even, the width to match), which the card and the Cast
+    /// playlist must agree with.
     var outputVideoSize: CGSize? {
         guard let v = video, v.width > 0, v.height > 0, !isAudioOnly else { return nil }
-        if case .transcode(let maxHeight, _, _) = videoAction, v.height > maxHeight {
-            return CGSize(width: max(2, v.width * maxHeight / v.height / 2 * 2), height: maxHeight)
+        if case .transcode(let maxHeight, _, _) = videoAction {
+            let height = max(2, min(maxHeight, v.height) / 2 * 2)
+            return CGSize(width: Self.scaledWidth(v.width, v.height, toHeight: height), height: height)
         }
         return CGSize(width: v.width, height: v.height)
+    }
+
+    /// The width ffmpeg's `scale=-2:h` gives a `width` x `height` picture made `outHeight` tall:
+    /// the same shape, rounded to the nearest even number.
+    static func scaledWidth(_ width: Int, _ height: Int, toHeight outHeight: Int) -> Int {
+        guard width > 0, height > 0 else { return 0 }
+        return max(2, (outHeight * width + height) / (2 * height) * 2)
+    }
+
+    /// Frames per second the device receives: converted video is capped at 60, which is as many
+    /// as TVs and Chromecasts take.
+    var outputFrameRate: Double? {
+        video.map { isTranscodingVideo && $0.fps > 61 ? 60 : $0.fps }
     }
 
     var isCopyingVideo: Bool {
@@ -230,7 +246,14 @@ struct StreamPlan: Sendable {
             case .embedded(let s):
                 burnSource = "[0:\(s.index)]"
             case .external(let url):
-                args += seek + ["-i", url.path]
+                // Not with the film's -ss: ffmpeg adds the subtitle file's own start (its first
+                // line) to it and then trims everything before, so the line on screen where the
+                // stream starts, and in a file that begins late every line, was lost. Seeking a
+                // little early by the file's clock, untrimmed, keeps them; the overlay waits for
+                // the film. Reading from the very start instead costs seconds deep into a film.
+                let early = startTime - 30
+                if early > 0.0005 { args += ["-seek_timestamp", "1", "-noaccurate_seek", "-ss", String(format: "%.4f", early)] }
+                args += ["-i", url.path]
                 burnSource = "[\(nextInput):s:0]"
                 nextInput += 1
             }
@@ -258,14 +281,21 @@ struct StreamPlan: Sendable {
                     label = "[deint]"
                 }
                 if let src = burnSource {
-                    // Picture subtitles (PGS / VobSub) are composited onto the video.
-                    graph += "\(label)\(src)overlay=eof_action=pass[ov];"
+                    // Picture subtitles (PGS / VobSub) are composited onto the video, their canvas
+                    // fitted to the picture first: a 1080-line Blu-ray subtitle over a film cropped
+                    // to 1920x800, or over a smaller copy, lost its bottom lines, which is where
+                    // subtitles are. When the sizes already match this scaler does nothing.
+                    if v.width > 0 && v.height > 0 {
+                        graph += "\(src)scale=\(v.width):\(v.height)[subs];\(label)[subs]overlay=eof_action=pass[ov];"
+                    } else {
+                        graph += "\(label)\(src)overlay=eof_action=pass[ov];"
+                    }
                     label = "[ov]"
                 }
                 // Even, because 4:2:0 video can't have an odd size.
                 let scale = "scale=-2:'trunc(min(\(height),ih)/2)*2'"
                 let outH = min(height, v.height) / 2 * 2
-                let outW = v.height > 0 ? max(2, v.width * outH / v.height / 2 * 2) : 0
+                let outW = Self.scaledWidth(v.width, v.height, toHeight: outH)
                 // Converting to BT.709 is what tone-maps PQ / HLG to SDR on the GPU.
                 let toSDR = v.isHDR ? ":color_matrix=bt709:color_primaries=bt709:color_transfer=bt709" : ""
                 if allOnGPU || (useHardware && v.isHDR && v.height > 0) {
@@ -358,6 +388,10 @@ enum StreamPlanner {
         let text = subtitle != nil && burn == nil ? subtitle : nil
         var heightLimit = min(profile.maxHeight, settings.maxResolution)
         if let v = info.video, v.fps > 31 { heightLimit = min(heightLimit, profile.maxHeightAbove30fps) }
+        // The limit is a 16:9 picture, so a wide film is held to its width as well: 3840x1600
+        // "in 1080p" came out 2592 wide, past the H.264 level a 1080p Chromecast decodes, and a
+        // 2560x1080 file went to it untouched. Cinema 4K, 4096 wide, is a size 4K devices decode.
+        let widthLimit = heightLimit >= 2160 ? 4096 : heightLimit * 16 / 9
 
         // Video
         var videoAction: StreamPlan.VideoAction = .none
@@ -370,6 +404,7 @@ enum StreamPlanner {
             if v.height > heightLimit {
                 reasons.append(v.fps > 31 && heightLimit < profile.maxHeight ? "taller than \(heightLimit)p at \(Int(v.fps.rounded())) fps" : "taller than \(heightLimit)p")
             }
+            if v.width > widthLimit { reasons.append("wider than \(widthLimit) pixels") }
             if v.codec == "h264", profile.maxH264Level > 0, v.level > profile.maxH264Level {
                 reasons.append(String(format: "H.264 level %.1f is above this device's %.1f", Double(v.level) / 10, Double(profile.maxH264Level) / 10))
             }
@@ -386,12 +421,15 @@ enum StreamPlanner {
                 videoAction = .copy
                 notes.append("Video: \(v.summary), sent untouched")
             } else {
-                let height = min(v.height > 0 ? v.height : 1080, heightLimit)
+                // The tallest even height that fits both limits, keeping the picture's shape.
+                var height = min(v.height > 0 ? v.height : 1080, heightLimit)
+                if v.width > 0 && v.height > 0 { height = min(height, widthLimit * v.height / v.width) }
+                height = max(2, height / 2 * 2)
                 let kbps = settings.videoBitrateMbps * 1000 * (height > 1080 ? 2 : 1)
                 videoAction = .transcode(maxHeight: height, bitrateKbps: kbps, hardware: settings.hardware)
                 let engine = settings.hardware ? "on the GPU" : "in software"
                 notes.append("Video: \(v.summary) converted to H.264 \(height)p \(engine) (\(reasons.joined(separator: "; ")))")
-                if v.needsDolbyVisionTag { notes.append("Dolby Vision profile 5 can't be converted accurately, so colours may look wrong") }
+                if v.needsDolbyVisionTag { notes.append("Dolby Vision profile 5 can't be converted accurately, so colors may look wrong") }
             }
         }
 

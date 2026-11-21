@@ -2,8 +2,10 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var player: PlaybackController
+    @EnvironmentObject private var library: Library
     @Environment(\.openWindow) private var openWindow
-    @AppStorage(Prefs.showDetails) private var showDetails = false
+    @Environment(\.undoManager) private var undoManager
+    @AppStorage(Prefs.showDetails) private var showDetails = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +36,17 @@ struct ContentView: View {
             openWindow(id: "video")
         }
         .onChange(of: player.isAirPlaying) { SubtitleSizeMenuItem.shared.isHidden = $0 }
+        // Edit > Undo takes back changes to the playlists: the library registers them with
+        // this window's undo manager.
+        .onAppear { library.undoManager = undoManager }
+        .onChange(of: undoManager) { library.undoManager = $0 }
+        // Said once: the saved playlists couldn't be read at launch, and where the file is now.
+        .alert("Saved Playlists", isPresented: Binding(get: { library.loadProblem != nil },
+                                                        set: { if !$0 { library.loadProblem = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(library.loadProblem ?? "")
+        }
         .overlay(alignment: .top) {
             if !FFmpeg.isAvailable {
                 FFmpegMissingBanner()
@@ -70,7 +83,7 @@ private struct FFmpegMissingBanner: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-            Text("Driftcast's built-in media engine (ffmpeg) is missing or can't run on this Mac. Reinstall Driftcast, or choose an ffmpeg folder in Settings.")
+            Text("Driftcast's built-in media engine (ffmpeg) is missing or can't run on this Mac. Reinstall Driftcast.")
                 .font(.callout)
             Button("Settings…") { SettingsOpener.open() }
         }

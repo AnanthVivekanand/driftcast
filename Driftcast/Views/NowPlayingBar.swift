@@ -21,7 +21,13 @@ struct NowPlayingBar: View {
         .padding(.vertical, 10)
         .background(.bar)
         .sheet(isPresented: Binding(get: { player.showSubtitleSearch }, set: { player.showSubtitleSearch = $0 })) {
-            if let item = player.nowPlaying { SubtitleSearchView(item: item) }
+            if let item = player.subtitleTarget { SubtitleSearchView(item: item) }
+        }
+        // The search is for the video playing (else the one selected). When that stops (its end, Stop, a failure to
+        // start the next one) the sheet goes with it, where it used to stay up as an empty
+        // sheet with nothing to close it.
+        .onChange(of: player.nowPlaying == nil) { nothing in
+            if nothing, player.showSubtitleSearch { player.showSubtitleSearch = false }
         }
     }
 
@@ -42,7 +48,7 @@ struct NowPlayingBar: View {
             VStack(alignment: .leading, spacing: 1) {
                 Group {
                     if let item = player.nowPlaying {
-                        TitleLine(title: item.parsedTitle)
+                        TitleLine(item: item)
                     } else {
                         Text("Nothing playing").lineLimit(1)
                     }
@@ -61,23 +67,34 @@ struct NowPlayingBar: View {
 
     private var transport: some View {
         HStack(spacing: 18) {
+            // Each has a name for VoiceOver: a button that is only a picture was read out as
+            // "button", or by the picture's file name.
             Button { player.previous() } label: { Image(systemName: "backward.end.fill") }
+                .disabled(!player.hasPrevious)
                 .help("Previous / restart")
+                .accessibilityLabel("Previous video, or back to the start")
             Button { player.skip(-10) } label: { Image(systemName: "gobackward.10") }
+                .disabled(player.nowPlaying == nil)
                 .help("Back 10 seconds")
+                .accessibilityLabel("Back 10 seconds")
             Button { player.togglePause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 30))
             }
             .help(player.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             Button { player.skip(10) } label: { Image(systemName: "goforward.10") }
+                .disabled(player.nowPlaying == nil)
                 .help("Forward 10 seconds")
+                .accessibilityLabel("Forward 10 seconds")
             Button { player.next() } label: { Image(systemName: "forward.end.fill") }
                 .disabled(!player.hasNext)
                 .help("Next video")
+                .accessibilityLabel("Next video")
             Button { player.stop() } label: { Image(systemName: "stop.fill") }
                 .disabled(player.nowPlaying == nil)
                 .help("Stop")
+                .accessibilityLabel("Stop")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 15))
@@ -90,16 +107,25 @@ struct NowPlayingBar: View {
             Button { showOptions.toggle() } label: { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(.borderless)
                 .help("Audio adjustments and stream details")
+                .accessibilityLabel("Audio adjustments and stream details")
                 .popover(isPresented: $showOptions, arrowEdge: .top) { OptionsPopover() }
             HStack(spacing: 4) {
-                Image(systemName: player.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
+                // The speaker mutes the device itself, and shows a TV muted with its own remote.
+                Button { player.setMuted(!player.deviceMuted) } label: {
+                    Image(systemName: player.deviceMuted || player.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .frame(width: 16)
+                }
+                .buttonStyle(.borderless)
+                .help(player.deviceMuted ? "Unmute" : "Mute")
+                .accessibilityLabel(player.deviceMuted ? "Unmute" : "Mute")
                 Slider(value: Binding(get: { player.volume }, set: { player.setVolume($0) }), in: 0...1)
                     .controlSize(.small)
                     .frame(width: 90)
+                    .help("Volume")
+                    .accessibilityLabel("Volume")
             }
-            .help("Volume")
         }
         .disabled(player.nowPlaying == nil)
     }
@@ -122,6 +148,7 @@ struct NowPlayingBar: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Audio track")
+        .accessibilityLabel("Audio track")
     }
 
     private var subtitleMenu: some View {
@@ -134,6 +161,7 @@ struct NowPlayingBar: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Subtitles")
+        .accessibilityLabel("Subtitles")
     }
 }
 
@@ -195,6 +223,18 @@ struct Scrubber: View {
             }
             .frame(height: 20)
             .contentShape(Rectangle())
+            // The timeline is drawn, not a system slider, so it says what it is and where it
+            // stands, and VoiceOver's up and down move it ten seconds.
+            .accessibilityElement()
+            .accessibilityLabel("Position in the video")
+            .accessibilityValue(player.duration > 0 ? "\(formatTime(shown)) of \(formatTime(player.duration))" : "No video")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: player.skip(10)
+                case .decrement: player.skip(-10)
+                @unknown default: break
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in

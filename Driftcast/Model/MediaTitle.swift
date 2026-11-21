@@ -8,11 +8,28 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
     var year: Int?
     var season: Int?
     var episode: Int?
+    /// The country an episode's show is named with, the way release names tell apart two shows
+    /// of one name ("The.Office.US.S01E01"): "US", "UK" or "AU". Used to pick the show online.
+    var country: String?
+    /// An episode's show as the file name writes it, when a year or a country was taken off the
+    /// end of it ("Doctor Who 2005", "The Office US"). That is the name shown; `title`, `year`
+    /// and `country` are what is looked up.
+    var writtenTitle: String?
 
     var isEpisode: Bool { episode != nil }
 
-    /// The words to search a database with ("Heat 1995", "Sopranos").
-    var searchQuery: String { year.map { "\(title) \($0)" } ?? title }
+    /// The film or show as it is shown: "Doctor Who 2005", where the lookup asks for "Doctor Who".
+    var shownTitle: String { writtenTitle ?? title }
+
+    /// The words to search a database with ("Heat 1995", "Sopranos", "Doctor Who 2005").
+    var searchQuery: String { writtenTitle ?? year.map { "\(title) \($0)" } ?? title }
+
+    /// The same episode with its show's name as the file writes it, nothing taken out of it.
+    /// A second try online, for a show whose name does end in a year: "Space 1999".
+    var asWritten: MediaTitle? {
+        guard let writtenTitle else { return nil }
+        return MediaTitle(title: writtenTitle, season: season, episode: episode)
+    }
 
     /// "Season 1, Episode 11" / "Episode 11".
     var episodeLabel: String? {
@@ -33,14 +50,14 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
 
     /// The file as people read it: "The Sopranos S4 E7", "Heat (1995)". The release name's
     /// dots, quality, encoding, group and extension are left out.
-    var displayName: String { titleTag.map { "\(title) \($0)" } ?? title }
+    var displayName: String { titleTag.map { "\(shownTitle) \($0)" } ?? shownTitle }
 
     /// The two lines on the TV's own pause and seek panel, each short enough not to wrap. An
     /// episode is the show's name over "Season 4, Episode 7". A film is its name alone, without
     /// the year once it has been found online (the poster card showed it); an unknown film
     /// keeps the year, the only hint of which one it is.
     func tvLines(lookedUp: Bool) -> (title: String, subtitle: String?) {
-        if isEpisode { return (title, episodeLabel) }
+        if isEpisode { return (shownTitle, episodeLabel) }
         return (lookedUp ? title : displayName, nil)
     }
 
@@ -49,6 +66,12 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
         #"\b(\d{1,2})x(\d{2,3})\b"#,
         #"\bSeason\s*(\d{1,2})\b.*?\b(?:Episode|Ep|E)\s*(\d{1,3})\b"#,
         #"\b(?:Episode|Ep)\s*#?(\d{1,4})\b"#,
+        // "Show E03", and the "Show - 03" of fan releases, which `SeriesName` already groups.
+        // Two or three digits, so "Concert - 2019" and "Rocky - 2" are left alone, and only at
+        // the end of the name or before a bracket, a version or a picture size, so "Party - 12
+        // 05 2023" (a date) is too.
+        #"\bE(\d{2,3})\b"#,
+        #"\s[-–]\s*(\d{2,3})(?=$|\s*[\[\(]|v\d|\s+[-–]\s|\s+\d{3,4}[pi]\b)"#,
     ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 
     private static let yearPattern = try! NSRegularExpression(pattern: #"\b(19[2-9]\d|20\d\d)\b"#)
@@ -64,6 +87,36 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
     ]
 
     static func parse(fileName: String) -> MediaTitle {
+        // A camera's counter can look like a year ("IMG_2019" is not a film from 2019), and
+        // nothing else in such a name says what the video is.
+        var found = isDeviceRecording(fileName: fileName) ? plainTitle(fileName) : read(fileName)
+        // Cleaning can leave nothing to show; then the name is shown as the file has it.
+        if !found.title.contains(where: { $0.isLetter || $0.isNumber }) {
+            found = MediaTitle(title: fileName.trimmingCharacters(in: .whitespaces))
+        }
+        return found
+    }
+
+    /// Names that cameras, phones, drones and the screen recorder give their files: IMG_1234,
+    /// IMG_E1234, DSC_0042, DSCF0042, MVI_0001, DJI_0001, PXL_20240102_103015123,
+    /// VID_20240102_103015, GOPR0001, GH010001, "Screen Recording 2024-01-02 at 10.30.15".
+    private static let deviceName = try! NSRegularExpression(
+        pattern: #"^(?:(?:IMG|VID|MVI|MOV|DSC[FN]?|DJI|PXL|GOPR|G[HX]\d\d)[_-]?[A-Z]?\d{3,}|(?:Simulator )?Screen Recording\b)"#,
+        options: [.caseInsensitive])
+
+    /// Whether a file name is one a camera, a phone or the screen recorder made up, rather
+    /// than the name of a film or a show.
+    static func isDeviceRecording(fileName: String) -> Bool {
+        deviceName.firstMatch(in: fileName, range: NSRange(fileName.startIndex..., in: fileName)) != nil
+    }
+
+    /// The name made readable, read for nothing more than words.
+    private static func plainTitle(_ fileName: String) -> MediaTitle {
+        let plain = readable(wordsFromSlug(withoutTrailingTags(fileName)))
+        return MediaTitle(title: tidy(cutAtReleaseTag(plain)) ?? tidy(plain) ?? plain)
+    }
+
+    private static func read(_ fileName: String) -> MediaTitle {
         let name = wordsFromSlug(withoutTrailingTags(fileName))
         let s = SeriesName.normalize(name)
         let whole = NSRange(s.startIndex..., in: s)
@@ -81,7 +134,9 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
             let episode = m.numberOfRanges == 3 ? number(2) : number(1)
             let head = String(s[..<range.lowerBound])
             let title = tidy(cutAtReleaseTag(head)) ?? tidy(head) ?? head
-            return MediaTitle(title: title, year: nil, season: season, episode: episode)
+            var found = MediaTitle(title: title, year: nil, season: season, episode: episode)
+            found.separateQualifiers()
+            return found
         }
 
         // A film: the title ends at its year.
@@ -95,6 +150,44 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
         // the name made readable, up to the first release tag.
         let plain = readable(name)
         return MediaTitle(title: tidy(cutAtReleaseTag(plain)) ?? tidy(plain) ?? plain)
+    }
+
+    /// The countries release names put after a show's name, as they write them.
+    private static let countries: Set<String> = ["US", "UK", "AU"]
+
+    /// "Doctor Who 2005", "The Office US": the year or the country that release names put after
+    /// a show's name to tell it from another show of that name. They are taken off `title` into
+    /// `year` and `country`, so that the lookup asks for the "Doctor Who" first shown in 2005.
+    /// Asked for a show called "Doctor Who 2005", the services gave whichever "Doctor Who" came
+    /// first, the one from 1963 as likely as not. The name stays as written for showing
+    /// (`writtenTitle`).
+    ///
+    /// A name that is nothing but a year keeps it ("1923"). A country counts when it is written
+    /// in capitals in a name that isn't ("This Is Us" is a show of its own), or in brackets.
+    private mutating func separateQualifiers() {
+        var words = title.split(separator: " ").map(String.init)
+        let latest = Calendar(identifier: .gregorian).component(.year, from: Date()) + 1
+        var foundYear: Int?, foundCountry: String?
+        while words.count > 1, let last = words.last {
+            let bare = last.trimmingCharacters(in: CharacterSet(charactersIn: "()[]"))
+            let bracketed = bare.count < last.count
+            if foundYear == nil, bare.count == 4, bare.allSatisfy(\.isNumber), let y = Int(bare), (1920...latest).contains(y) {
+                foundYear = y
+            } else if foundCountry == nil, Self.countries.contains(bare.uppercased()),
+                      bracketed || (bare == bare.uppercased() && title != title.uppercased()) {
+                foundCountry = bare.uppercased()
+            } else {
+                break
+            }
+            words.removeLast()
+        }
+        guard foundYear != nil || foundCountry != nil else { return }
+        let rest = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " -–:,"))
+        guard rest.contains(where: { $0.isLetter || $0.isNumber }) else { return }
+        writtenTitle = title
+        title = rest
+        year = foundYear
+        country = foundCountry
     }
 
     /// The year a film came out, as release names write it: "(1995)", or a bare 1995 that ends
@@ -245,8 +338,21 @@ struct MediaTitle: Equatable, Hashable, Sendable, Codable {
 
     private static func tidy(_ text: String) -> String? {
         var t = text.trimmingCharacters(in: CharacterSet(charactersIn: " -–:,([{#"))
+        // "[REC]", "(500) Days of Summer": a bracket the name opens with stays when it closes.
+        if let open = text.trimmingCharacters(in: CharacterSet(charactersIn: " -–:,#")).first,
+           let close = ["(": ")", "[": "]", "{": "}"][open], t.contains(close) {
+            t = String(open) + t
+        }
         t = t.split(separator: " ").joined(separator: " ")
         guard t.contains(where: \.isLetter) || t.contains(where: \.isNumber) else { return nil }
-        return t == t.lowercased() ? t.capitalized : t
+        return t == t.lowercased() ? capitalizedWords(t) : t
+    }
+
+    /// An all-lowercase name with a capital at the start of each word: "3rd Rock From The Sun",
+    /// "Se7en", "Spider-Man". Plain `capitalized` starts a word again after a digit ("3Rd",
+    /// "Se7En"); the word rules of a fixed language don't, and give the same on every Mac (a
+    /// Turkish one would write "Ice" with a dotted capital I).
+    static func capitalizedWords(_ text: String) -> String {
+        text.capitalized(with: Locale(identifier: "en_US_POSIX"))
     }
 }
