@@ -8,8 +8,9 @@ import SwiftUI
 /// The genres keep to one line: a list too long for the room is cut short with "…" (the
 /// user's call the same day; it wrapped, or pushed the ratings down). So the ratings stay
 /// beside the text as long as the first line and the air date fit next to them. When those
-/// don't (a film's IMDb, Rotten Tomatoes and Metacritic), the ratings go under the text, at
-/// the right.
+/// don't (a film's IMDb, Rotten Tomatoes and Metacritic), the ratings go under the text,
+/// centered, with an empty line between (the user's placing; they were hard under the
+/// genres, at the right).
 struct TitleFactsRow: View {
     /// "2008", or nil.
     let year: String?
@@ -31,11 +32,12 @@ struct TitleFactsRow: View {
                     text(firstLineWraps: false)
                     badges
                 }
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 20) {
                     text(firstLineWraps: true)
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
                         badges
+                        Spacer(minLength: 0)
                     }
                 }
             }

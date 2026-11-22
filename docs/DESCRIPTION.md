@@ -125,7 +125,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   their own under the captions line); the genres keep to one line, a list too long for the room being cut
   short with "…" (the whole list is in its tooltip), so the ratings stay beside the text
   unless the first line itself doesn't fit next to them (a film's IMDb, Rotten Tomatoes and
-  Metacritic), when they go under the text, still at the right. The year, which leads the first line, is in black and the rest of the
+  Metacritic), when they go under the text, centered, with an empty line between. The year, which leads the first line, is in black and the rest of the
   line gray (the user's request, 2026-11-22; all of it was gray). In the list, a video whose file is gone shows its warning
   triangle in red where its picture was (same day; it was gray, as it still is for a file
   that is there but can't be read). An episode's air date is the line under the genres, "Aired 2002-11-03" (the
