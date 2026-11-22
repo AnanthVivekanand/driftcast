@@ -318,7 +318,18 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   are kept in `online-subtitles.json`: a subtitle worth offering for 30 days, nothing (or
   nothing worth offering) for 3; a search that failed is tried again the next time the video
   is shown. With "I
-  don't care about subtitles" on, nothing is looked up or offered. For an episode of a show the window says
+  don't care about subtitles" on, nothing is looked up or offered. **Remove Subtitle** (new in
+  1.1.4, the user's request: one that wasn't in sync could only be turned off and stayed in
+  the video's menus for good): a submenu in the Subtitles menu, the details panel's captions
+  menu and the video window's CC menu lists the subtitle files attached to the video (added
+  from the disk or from OpenSubtitles; tracks inside the video and files beside it can't be
+  removed and aren't listed), and the details panel shows a Remove button beside the captions
+  menu when such a file is the one chosen. Removing takes the file off the video in every
+  playlist (`Library.detachSubtitle`), turns subtitles off if it was on, and leaves the file
+  on the Mac. One that came from OpenSubtitles (told by the result number in its name,
+  `OpenSubtitlesClient.fileID(ofDownloaded:)`) is remembered per video in
+  `online-subtitles.json` and is passed over from then on, by the lookup and by the search
+  made as a video starts; the video is looked up afresh, so the next best can be offered. For an episode of a show the window says
   which one beside the title box ("Season 1, Episode 2"), since the search is narrowed to it;
   a film shows nothing there. Nobody is asked for a key:
   Driftcast sends its own (one per app, not per person), and since 1.1.4 the app has no
@@ -821,7 +832,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
 | `~/Library/Caches/Driftcast/Metadata/`, `Artwork/` | film and show details and their posters |
 | `~/Library/Application Support/Driftcast/title-overrides.json` | titles corrected by hand |
 | `~/Library/Application Support/Driftcast/title-names.json` | names typed in the list with Rename (new in 1.1.3) |
-| `~/Library/Application Support/Driftcast/online-subtitles.json` | what OpenSubtitles had for each video looked up by itself (new in 1.1.4): the best result, kept 30 days when worth offering, else 3 |
+| `~/Library/Application Support/Driftcast/online-subtitles.json` | what OpenSubtitles had for each video looked up by itself (new in 1.1.4): the best result, kept 30 days when worth offering, else 3; and, per video, the results that were added and then removed, which are not offered again |
 | `~/Library/Application Support/Driftcast/watched-videos.json` | the list of videos played (since 1.1.2; in 1.1.1 it is `~/Movies/Videos I have watched on Driftcast.txt` and `.json`) |
 | `~/Library/Logs/Driftcast/Errors.log` | the error log (new in 1.1.1) |
 | `$TMPDIR/DriftcastStreams/<pid>/<session>/` | HLS segments while a video plays; removed when it stops and at quit; folders of copies that are no longer running are cleaned at launch |
@@ -865,7 +876,7 @@ local-network permission.
   was left alone and the new one quit. It has not been tried by double-clicking a video in
   the Finder with two real copies installed, and a copy older than 1.1.2 opened second is
   not stopped.
-- **What was added for 1.1.3** (20 November 2026). The logic harness (659 checks then; 675 in 1.1.4, the new ones on the built-in key's file,
+- **What was added for 1.1.3** (20 November 2026). The logic harness (659 checks then; 678 in 1.1.4, the new ones on the built-in key's file,
   subtitle closeness and order, the search's notice and the lookup's offers and cache) covers the
   names, the orders, the time left, playlists and their saved files, missing videos, where
   later episodes go, the updater, the subtitle readers and the Chromecast messages. The rest

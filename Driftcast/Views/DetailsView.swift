@@ -694,6 +694,16 @@ struct SubtitleSection: View {
                                   ? (player.subtitle == nil ? "Turns the chosen captions on" : "Turns the captions off")
                                   : "Plays this video with the chosen captions")
                             .fixedSize()
+                        // For a subtitle file added to the video (from OpenSubtitles or the
+                        // disk) that isn't in sync: off alone left it attached for good.
+                        if case .external(let file)? = shown, player.removableSubtitles(for: current).contains(file) {
+                            Button("Remove") {
+                                player.removeSubtitleFile(file, from: current)
+                                userPicked = false
+                            }
+                            .fixedSize()
+                            .help("Takes this subtitle file off the video, for one that isn't in sync. The file stays on your Mac.")
+                        }
                     }
                     .controlSize(.small)
                 }
@@ -775,6 +785,7 @@ struct SubtitleSection: View {
             Divider()
             Button("Find Subtitles Online…") { findOnline() }
             Button("Add Subtitle File…") { player.chooseSubtitleFile(for: current) }
+            RemoveSubtitleMenu(item: current)
         } label: {
             Text(shown?.label ?? "Off").lineLimit(1)
         }

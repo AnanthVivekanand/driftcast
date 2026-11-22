@@ -516,6 +516,7 @@ struct SubtitleMenuItems: View {
         Divider()
         Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
         Button("Add Subtitle File…") { player.chooseSubtitleFile() }
+        RemoveSubtitleMenu()
         if player.canReadSubtitlesAgain { Button("Read Subtitles Again") { player.readSubtitlesAgain() } }
         Divider()
         SubtitleSizeMenu()

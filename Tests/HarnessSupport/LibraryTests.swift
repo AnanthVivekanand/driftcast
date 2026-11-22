@@ -87,6 +87,27 @@ import Foundation
               "Add Videos… with no playlist selected adds to the first playlist and shows it (\(added.count) added)")
     }
 
+    // A subtitle file attached to a video can be taken off again, in every row that lists it.
+    do {
+        let (dir, files) = folder("detach-subtitle", files: ["Alien.1979.mkv", "Heat.1995.mkv"])
+        let store = dir.appendingPathComponent("library.json")
+        let library = Library(storeURL: store)
+        library.add(files)
+        library.addToNewPlaylist([files[0]])   // the same video in a second playlist
+        let good = dir.appendingPathComponent("good.en.srt"), bad = dir.appendingPathComponent("bad.en.srt")
+        library.attachSubtitle(good, toFile: files[0])
+        library.attachSubtitle(bad, toFile: files[0])
+        library.attachSubtitle(bad, toFile: files[1])
+        library.detachSubtitle(bad, fromFile: files[0])
+        let rows = library.playlists.flatMap(\.items).filter { $0.url == files[0] }
+        check(rows.count == 2 && rows.allSatisfy { $0.extraSubtitles == [good] }
+              && library.attachedSubtitles(ofFile: files[0]) == [good] && library.attachedSubtitles(ofFile: files[1]) == [bad],
+              "Remove Subtitle: the file leaves every row of that video, and no other video")
+        library.saveNow()
+        check(Library(storeURL: store).attachedSubtitles(ofFile: files[0]) == [good],
+              "Remove Subtitle: a removed subtitle file stays removed after a restart")
+    }
+
     // Episodes added later go into their season's list in episode order, while the list is
     // still in that order; a list rearranged by hand gets them at the end.
     do {

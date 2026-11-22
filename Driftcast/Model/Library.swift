@@ -894,6 +894,23 @@ final class Library: ObservableObject {
         save()
     }
 
+    /// Takes an attached subtitle file off a video, in every row that lists it. The file
+    /// itself stays where it is.
+    func detachSubtitle(_ subtitle: URL, fromFile file: URL) {
+        for p in playlists.indices {
+            for j in playlists[p].items.indices where playlists[p].items[j].url == file {
+                playlists[p].items[j].extraSubtitles.removeAll { $0 == subtitle }
+            }
+        }
+        save()
+    }
+
+    /// The subtitle files attached to a video by hand or from OpenSubtitles: the ones that
+    /// can be taken off again. Tracks inside the video and files beside it are not among them.
+    func attachedSubtitles(ofFile file: URL) -> [URL] {
+        playlists.lazy.flatMap(\.items).first { $0.url == file }?.extraSubtitles ?? []
+    }
+
     func attachSubtitle(_ subtitle: URL, toFile file: URL) {
         for p in playlists.indices {
             for j in playlists[p].items.indices where playlists[p].items[j].url == file {

@@ -356,6 +356,17 @@ struct SubtitleCommands: Commands {
                 .disabled(player.subtitleTarget == nil)
             Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
                 .disabled(player.subtitleTarget == nil)
+            // Listed here, not through RemoveSubtitleMenu: a menu-bar menu has no environment.
+            if let target = player.subtitleTarget {
+                let attached = player.removableSubtitles(for: target)
+                if !attached.isEmpty {
+                    Menu("Remove Subtitle") {
+                        ForEach(attached, id: \.self) { file in
+                            Button(SubtitleChoice.external(file).label) { player.removeSubtitleFile(file, from: target) }
+                        }
+                    }
+                }
+            }
             Button("Read Subtitles Again") { player.readSubtitlesAgain() }
                 .disabled(!player.canReadSubtitlesAgain)
             Divider()

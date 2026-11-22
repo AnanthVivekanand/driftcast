@@ -13,6 +13,7 @@ earlier versions are on the [releases page](https://github.com/leechsoftware/dri
 - **CLOSE tag** on subtitles from the same kind of source as your file, which are likely in sync.
 - **A yellow notice** says when nothing was made for your file, and whether the first results are close.
 - **TV episodes** show their season and episode beside the search box.
+- **Remove Subtitle:** takes a subtitle that isn't in sync off the video, and it isn't offered again.
 
 ### Changed
 

@@ -922,6 +922,35 @@ final class PlaybackController: ObservableObject {
         selectSubtitle(choice)
     }
 
+    /// The subtitle files that can be taken off a video again (the playing one unless another
+    /// is given): the ones attached by hand or from OpenSubtitles.
+    func removableSubtitles(for item: MediaItem? = nil) -> [URL] {
+        guard let item = item ?? nowPlaying else { return [] }
+        return library.attachedSubtitles(ofFile: item.url)
+    }
+
+    /// Takes an attached subtitle file off a video (the playing one unless another is given),
+    /// for one that turned out not to be in sync: off alone left it in the video's menus for
+    /// good (the user's request, 2026-11-21). If it was on, subtitles go off. The file stays on
+    /// the Mac; one from OpenSubtitles isn't offered or fetched for this video again.
+    func removeSubtitleFile(_ url: URL, from item: MediaItem? = nil) {
+        guard let item = item ?? nowPlaying else { return }
+        library.detachSubtitle(url, fromFile: item.url)
+        OnlineSubtitleLookup.shared.subtitleRemoved(url, from: item.url)
+        if infoItem?.url == item.url { infoItem?.extraSubtitles.removeAll { $0 == url } }
+        guard nowPlaying?.url == item.url else { return }
+        nowPlaying?.extraSubtitles.removeAll { $0 == url }
+        let choice = SubtitleChoice.external(url)
+        // Listed afresh, not just struck out: a file that also sits beside the video under its
+        // name is found there and stays.
+        if let info, let playing = nowPlaying {
+            subtitleChoices = SubtitleChoice.available(for: playing, info: info)
+        } else {
+            subtitleChoices.removeAll { $0 == choice }
+        }
+        if subtitle == choice, !subtitleChoices.contains(choice) { selectSubtitle(nil) }
+    }
+
     /// Adds the videos or folders and plays the first of them: what Open… chose, and files
     /// opened from the Finder. A video already listed plays from its existing row. False when
     /// none of them is a video.
@@ -1058,9 +1087,11 @@ final class PlaybackController: ObservableObject {
             guard let client = try? OpenSubtitlesClient.fromSettings() else { return nil }
             do {
                 let found = try await OpenSubtitlesClient.searchVideo(item, language: language)
+                // One taken off this video before isn't fetched for it again.
+                let passedOver = await OnlineSubtitleLookup.shared.rejectedResults(for: item.url)
                 // Listed best first: made from this file, then for its release, then most downloaded.
                 // One that only covers the foreign-language lines isn't the film's subtitles.
-                guard let best = found.first(where: { !$0.foreignPartsOnly }) else { return nil }
+                guard let best = found.first(where: { !$0.foreignPartsOnly && !passedOver.contains($0.fileID) }) else { return nil }
                 return try await client.download(best, for: item.url)
             } catch {
                 return nil

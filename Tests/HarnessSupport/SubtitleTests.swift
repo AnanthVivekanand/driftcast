@@ -791,6 +791,14 @@ private func openSubtitlesChecks() {
     let savedBack = (try? JSONEncoder().encode(["k": foundEntry])).flatMap { try? JSONDecoder().decode([String: OnlineSubtitleLookup.Saved].self, from: $0) }
     check(savedBack?["k"]?.best == close && savedBack?["k"]?.count == 3,
           "OpenSubtitles lookup: a saved lookup reads back as it was written")
+    // Which OpenSubtitles result a downloaded file is, so one taken off a video isn't offered again.
+    let downloaded = OpenSubtitlesClient.downloadsFolder.appendingPathComponent(OpenSubtitlesClient.fileName(for: full, video: video))
+    var forcedOne = full; forcedOne.foreignPartsOnly = true
+    let downloadedForced = OpenSubtitlesClient.downloadsFolder.appendingPathComponent(OpenSubtitlesClient.fileName(for: forcedOne, video: video))
+    check(OpenSubtitlesClient.fileID(ofDownloaded: downloaded) == full.fileID && OpenSubtitlesClient.fileID(ofDownloaded: downloadedForced) == full.fileID
+          && OpenSubtitlesClient.fileID(ofDownloaded: URL(fileURLWithPath: "/v/Movie.2019.en.4242.srt")) == nil
+          && OpenSubtitlesClient.fileID(ofDownloaded: OpenSubtitlesClient.downloadsFolder.appendingPathComponent("notes.srt")) == nil,
+          "OpenSubtitles: a downloaded file's result number is read from its name, and only in the downloads folder")
     // Within a group, the name nearest the file's comes before a more downloaded one.
     let reward = "Breaking.Bad.S01E01.720p.BluRay.x264-REWARD"
     check(ReleaseMatch.sharedTags("Breaking.Bad.S01.720p.BluRay.X264-REWARD", with: reward) == 4

@@ -39,6 +39,15 @@ final class OnlineSubtitleLookup: ObservableObject {
         var checked: Date
     }
     private var saved: [String: Saved] = [:]
+    /// By video path, the OpenSubtitles results that were added and then taken off again
+    /// (out of sync, most likely): never offered or fetched for that video again.
+    private var rejected: [String: Set<Int>] = [:]
+
+    /// The file as written since Remove Subtitle came in. 1.1.4 wrote the lookups alone.
+    private struct Store: Codable {
+        var lookups: [String: Saved]
+        var rejected: [String: Set<Int>]
+    }
     /// Videos whose bubble has already opened by itself this run, so it pops up once only.
     private var announced: Set<String> = []
 
@@ -54,8 +63,11 @@ final class OnlineSubtitleLookup: ObservableObject {
 
     init() {
         // A cache: a file that can't be read is just started again.
-        if let data = try? Data(contentsOf: Self.file),
-           let entries = try? JSONDecoder().decode([String: Saved].self, from: data) {
+        guard let data = try? Data(contentsOf: Self.file) else { return }
+        if let store = try? JSONDecoder().decode(Store.self, from: data) {
+            saved = store.lookups.filter { Self.isFresh($0.value) }
+            rejected = store.rejected
+        } else if let entries = try? JSONDecoder().decode([String: Saved].self, from: data) {
             saved = entries.filter { Self.isFresh($0.value) }
         }
     }
@@ -71,11 +83,32 @@ final class OnlineSubtitleLookup: ObservableObject {
 
     private func remember(_ key: String, _ entry: Saved?) {
         saved[key] = entry
-        let entries = saved
+        write()
+    }
+
+    private func write() {
+        let store = Store(lookups: saved, rejected: rejected)
         Self.writes.async {
-            guard let data = try? JSONEncoder().encode(entries) else { return }
+            guard let data = try? JSONEncoder().encode(store) else { return }
             try? data.write(to: Self.file, options: .atomic)
         }
+    }
+
+    /// The results taken off this video before, which are passed over for it.
+    func rejectedResults(for url: URL) -> Set<Int> { rejected[url.path] ?? [] }
+
+    /// A subtitle file was taken off the video. When it came from OpenSubtitles it is not
+    /// offered for that video again, and the video is looked up afresh, so the next best can be.
+    func subtitleRemoved(_ file: URL, from video: URL) {
+        if let id = OpenSubtitlesClient.fileID(ofDownloaded: file) {
+            rejected[video.path, default: []].insert(id)
+        }
+        let prefix = video.path + "|"
+        for key in Set(states.keys).union(saved.keys) where key.hasPrefix(prefix) {
+            states[key] = nil
+            saved[key] = nil
+        }
+        write()
     }
 
     private static func key(_ url: URL, _ language: String) -> String { url.path + "|" + language.lowercased() }
@@ -119,7 +152,8 @@ final class OnlineSubtitleLookup: ObservableObject {
         do {
             let found = try await search.value
             // One that only covers the foreign-language lines isn't the film's subtitles.
-            let best = found.first(where: { !$0.foreignPartsOnly })
+            let passedOver = rejectedResults(for: item.url)
+            let best = found.first(where: { !$0.foreignPartsOnly && !passedOver.contains($0.fileID) })
             states[key] = best.map { State.found($0, count: found.count) } ?? State.nothing
             remember(key, Saved(best: best, count: found.count, checked: Date()))
         } catch {

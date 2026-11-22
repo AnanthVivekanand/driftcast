@@ -271,11 +271,24 @@ struct OpenSubtitlesClient {
         return parts.joined(separator: ".")
     }
 
+    static var downloadsFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Driftcast/Subtitles", isDirectory: true)
+    }
+
+    /// Which OpenSubtitles result a file in the downloads folder is: the number before its
+    /// extension ("Movie.en.4242.srt", see `fileName`). Nil for any other file.
+    static func fileID(ofDownloaded file: URL) -> Int? {
+        guard file.deletingLastPathComponent().standardizedFileURL.path == downloadsFolder.standardizedFileURL.path else { return nil }
+        let parts = file.lastPathComponent.split(separator: ".")
+        guard parts.count >= 3 else { return nil }
+        return Int(parts[parts.count - 2])
+    }
+
     /// Downloads a subtitle as SRT into Application Support and returns the file. One already there
     /// is used as it is: asking again would spend another of the day's few downloads on the same file.
     func download(_ result: Result, for video: URL) async throws -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Driftcast/Subtitles", isDirectory: true)
+        let dir = Self.downloadsFolder
         let file = dir.appendingPathComponent(Self.fileName(for: result, video: video))
         if let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int, size > 0 {
             return file
