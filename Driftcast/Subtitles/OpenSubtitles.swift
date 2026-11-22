@@ -1,21 +1,36 @@
 import Foundation
 
 /// Client for the OpenSubtitles.com REST API (v1). The API key identifies the app, not the
-/// person using it: put Driftcast's own key in `builtInKey` and nobody has to enter one. A key
-/// typed into Settings takes precedence. Keys come from https://www.opensubtitles.com/consumers.
+/// person using it, so Driftcast sends its own (`builtInKey`) and nobody is asked for one. Keys
+/// come from https://www.opensubtitles.com/consumers.
 struct OpenSubtitlesClient {
-    /// Driftcast's own API key, shipped with the app. Empty until one is registered.
-    static let builtInKey = ""
-    static let keyPage = URL(string: "https://www.opensubtitles.com/consumers")!
+    /// Driftcast's own API key, shipped with the app. It is not in the repository: the build
+    /// writes it to Resources/OpenSubtitles.key from the keychain (Scripts/embed-subtitle-key.sh),
+    /// as 32 random bytes and then the key XORed with them. Empty in a build made without it.
+    static let builtInKey: String = {
+        guard let url = Bundle.main.url(forResource: "OpenSubtitles", withExtension: "key"),
+              let data = try? Data(contentsOf: url) else { return "" }
+        return unmask(data)
+    }()
 
-    /// The key searches will use: the one from Settings, else the built-in one.
+    /// The key in an OpenSubtitles.key file's contents, or "" when there is none.
+    static func unmask(_ data: Data) -> String {
+        let bytes = [UInt8](data)
+        guard bytes.count > 32 else { return "" }
+        let mask = bytes[0..<32]
+        let key = bytes[32...].enumerated().map { $0.element ^ mask[$0.offset % 32] }
+        return String(decoding: key, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The key searches use: the built-in one. A build made without it (a fresh clone of the
+    /// repository) falls back to the `openSubtitlesAPIKey` default, which nothing in the app
+    /// sets any more (it was a box in Settings up to 1.1.3); `defaults write` can.
     static var activeKey: String {
-        let own = Prefs.string(Prefs.openSubtitlesKey).trimmingCharacters(in: .whitespacesAndNewlines)
-        return own.isEmpty ? builtInKey : own
+        builtInKey.isEmpty ? Prefs.string(Prefs.openSubtitlesKey).trimmingCharacters(in: .whitespacesAndNewlines) : builtInKey
     }
     static var hasKey: Bool { !activeKey.isEmpty }
 
-    struct Result: Identifiable, Hashable {
+    struct Result: Identifiable, Hashable, Codable {
         var id: Int { fileID }
         var fileID: Int
         var release: String
@@ -28,11 +43,19 @@ struct OpenSubtitlesClient {
         var title: String
         /// Its release name says it was made for the same release as the video (`ReleaseMatch`).
         var releaseMatch = false
+        /// For one that isn't a match, how near its name puts it (`ReleaseMatch.closeness`):
+        /// 1 from the same kind of source as the video, -1 from another source or cut, 0 unknown.
+        var closeness = 0
+        /// How many of the words describing the video's release its name shares (`ReleaseMatch.sharedTags`).
+        var sharedTags = 0
         /// Only the foreign-language parts (forced subtitles), not the whole film.
         var foreignPartsOnly = false
 
         /// Made for this file or its release, so it should be in sync.
         var isMatch: Bool { hashMatch || releaseMatch }
+        /// Not made for this release, but its name is near the video's (the same kind of
+        /// source, or several of the same release words), so it is likely in sync.
+        var isClose: Bool { !isMatch && closeness > 0 }
         /// What it was made from, as the uploader named it.
         var name: String { release.isEmpty ? fileName : release }
     }
@@ -46,7 +69,7 @@ struct OpenSubtitlesClient {
 
         var errorDescription: String? {
             switch self {
-            case .noKey: return "Searching online needs a free OpenSubtitles API key."
+            case .noKey: return "Searching OpenSubtitles isn't set up in this copy of Driftcast."
             case .http(let code, let msg): return "OpenSubtitles returned \(code)\(msg.isEmpty ? "" : ": \(msg)")"
             case .badResponse: return "OpenSubtitles sent a response Driftcast couldn't read."
             case .noDownloadsLeft(let date):
@@ -56,7 +79,7 @@ struct OpenSubtitlesClient {
             }
         }
 
-        /// OpenSubtitles answers 401 or 403 when the key itself is wrong.
+        /// OpenSubtitles answers 401 or 403 when it turns the app's key down.
         var isKeyRefused: Bool {
             switch self {
             case .noKey: return true
@@ -177,18 +200,50 @@ struct OpenSubtitlesClient {
                                 title: title)
             result.foreignPartsOnly = attrs["foreign_parts_only"] as? Bool ?? false
             if let videoName {
-                result.releaseMatch = [result.release, result.fileName].contains {
-                    !$0.isEmpty && ReleaseMatch.isSameRelease($0, as: videoName)
-                }
+                let names = [result.release, result.fileName].filter { !$0.isEmpty }
+                result.releaseMatch = names.contains { ReleaseMatch.isSameRelease($0, as: videoName) }
+                let near = names.map { ReleaseMatch.closeness($0, to: videoName) }
+                result.closeness = near.contains(1) ? 1 : near.contains(-1) ? -1 : 0
+                result.sharedTags = names.map { ReleaseMatch.sharedTags($0, with: videoName) }.max() ?? 0
             }
             return result
         }
-        .sorted { (Self.rank($0), $0.downloads) > (Self.rank($1), $1.downloads) }
+        .sorted { Self.order($0) > Self.order($1) }
     }
 
-    /// Exact file first, then the same release, then the rest; forced-only subtitles after all of
-    /// them, so the automatic pick, which takes the first, gets a whole film's subtitles when there are any.
-    static func rank(_ r: Result) -> Int { r.foreignPartsOnly ? -1 : r.hashMatch ? 2 : r.releaseMatch ? 1 : 0 }
+    /// What results are sorted by, highest first: the group (`rank`), then within a group how
+    /// many of the video's release words the name shares, and only then how often it was
+    /// downloaded. By downloads alone a popular subtitle for another copy sat above a near one
+    /// (the user's report, 2026-11-21).
+    static func order(_ r: Result) -> (Int, Int, Int) { (rank(r), r.sharedTags, r.downloads) }
+
+    /// Exact file first, then the same release, then ones with a name near the video's, then
+    /// those whose names don't say, then ones from another source or cut. Forced-only subtitles
+    /// come after all of them, so the automatic pick, which takes the first, gets a whole film's
+    /// subtitles when there are any.
+    static func rank(_ r: Result) -> Int {
+        r.foreignPartsOnly ? -1 : r.hashMatch ? 5 : r.releaseMatch ? 4 : r.closeness + 2
+    }
+
+    /// The line under the search results: how many, and how to use one.
+    static func summary(of found: [Result]) -> String {
+        let matches = found.filter(\.isMatch).count
+        let count = matches > 0 ? "\(found.count) found, \(matches) made for this video." : "\(found.count) found."
+        return "\(count) Double-click one, or select it and click Use."
+    }
+
+    /// The warning above the results when none was made for this video: that there is none
+    /// for the file's name, and whether the ones listed first are at least near it. Without
+    /// it a list of other copies' subtitles looked like matches (the user's request, 2026-11-21).
+    static func notice(of found: [Result]) -> String? {
+        guard !found.isEmpty, !found.contains(where: \.isMatch) else { return nil }
+        let close = found.filter { $0.isClose && !$0.foreignPartsOnly }.count
+        switch close {
+        case 0: return "No subtitles found for this file name, and none of these are close to it. They may be out of sync."
+        case 1: return "No subtitles found for this exact file name. The first one is close to it."
+        default: return "No subtitles found for this exact file name. The first \(close) are close to it."
+        }
+    }
 
     /// The `languages` value OpenSubtitles knows: it lists Portuguese and Chinese only by region and
     /// Norwegian only as "no", so "pt" asks for both Portuguese kinds and a Mac's "nb" asks for "no".

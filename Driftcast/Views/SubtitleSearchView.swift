@@ -4,35 +4,38 @@ struct SubtitleSearchView: View {
     let item: MediaItem
     @EnvironmentObject private var player: PlaybackController
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
     @AppStorage(Prefs.subtitleLanguage) private var language = "en"
     @State private var query = ""
+    /// "Season 1, Episode 2" for an episode of a show, shown beside the title: the search is
+    /// narrowed to it, and the title box alone didn't say so (the user's request, 2026-11-21).
+    /// Nil for a film.
+    @State private var episodeLabel: String?
     @State private var results: [OpenSubtitlesClient.Result] = []
     @State private var selection: OpenSubtitlesClient.Result.ID?
     @State private var busy = false
     @State private var message: String?
-    /// True while the dialog is asking for a key. Set when it opens and when OpenSubtitles turns
-    /// a key down, and cleared only by Continue, so the box doesn't vanish halfway through typing.
-    @State private var needsKey = false
-    @State private var keyProblem: String?
-    @State private var keyHelp = false
+    /// The yellow line above the results when none was made for this video (`OpenSubtitlesClient.notice`).
+    @State private var notice: String?
     /// The search or download under way, so Cancel can stop it.
     @State private var work: Task<Void, Never>?
-
-    private var typedKey: Bool { !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Find Subtitles Online").font(.title3.weight(.semibold))
-                if !needsKey {
-                    Text("Pick one and Use: it downloads and comes on.").font(.callout).foregroundStyle(.secondary)
-                }
+                Text("Pick one and Use: it downloads and comes on.").font(.callout).foregroundStyle(.secondary)
             }
             HStack {
                 TextField("Title", text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { if !needsKey { search() } }
+                    .onSubmit { search() }
+                if let episodeLabel {
+                    Text(episodeLabel)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                        .help("The search is narrowed to this episode, read from the file's name.")
+                }
                 Picker("Language", selection: $language) {
                     ForEach(Lang.common, id: \.self) { code in
                         Text(Lang.name(code) ?? code).tag(code)
@@ -45,11 +48,22 @@ struct SubtitleSearchView: View {
                 }
                 .labelsHidden()
                 .frame(width: 140)
-                if !needsKey {
-                    Button("Search") { search() }.disabled(busy)
-                }
+                Button("Search") { search() }.disabled(busy)
             }
-            if needsKey { keyPanel } else { resultsTable }
+            if let notice {
+                // Above the list, where it is read before a result is picked; under it, it
+                // was read after, if at all (the user's request, 2026-11-21).
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                    Text(notice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.yellow.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.yellow.opacity(0.6), lineWidth: 1))
+            }
+            resultsTable
             HStack {
                 if busy { ProgressView().controlSize(.small) }
                 if let message { Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
@@ -60,7 +74,7 @@ struct SubtitleSearchView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 // Only once there is something to use; a button that can't do anything yet is just confusing.
-                if !needsKey, !results.isEmpty {
+                if !results.isEmpty {
                     Button("Use") { download() }
                         .keyboardShortcut(.defaultAction)
                         .disabled(selection == nil || busy)
@@ -69,13 +83,14 @@ struct SubtitleSearchView: View {
             }
         }
         .padding(20)
-        .frame(width: 680, height: 460)
+        .frame(width: 680, height: 480)
         .task {
             // "Movie.Name.2019.1080p.BluRay.x264-GRP" -> "Movie Name 2019", or the title the
             // person corrected in the details panel.
-            query = await MetadataLookup.shared.title(for: item.url).searchQuery
-            needsKey = !OpenSubtitlesClient.hasKey
-            if !needsKey { search() }
+            let title = await MetadataLookup.shared.title(for: item.url)
+            query = title.searchQuery
+            episodeLabel = title.isEpisode ? title.episodeLabel : nil
+            search()
         }
         // The sheet is for the video it was opened for. When another one takes its place (the next
         // episode starts, or the details panel follows playback), its title and results no longer
@@ -83,47 +98,12 @@ struct SubtitleSearchView: View {
         .onChange(of: item.url) { _ in dismiss() }
     }
 
-    /// Takes the place of the results while there is no key: OpenSubtitles answers nothing
-    /// without one, so this is the one thing to do here, and it is all in one place.
-    private var keyPanel: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "key")
-                .font(.system(size: 30))
-                .foregroundStyle(.secondary)
-            Text("Add your free OpenSubtitles key to search")
-                .font(.headline)
-            Text("OpenSubtitles only answers apps that send a key. It's free, and you only need to do this once.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            HStack(spacing: 8) {
-                TextField("Paste your API key here", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 340)
-                    .onSubmit { continueWithKey() }
-                Button("Continue") { continueWithKey() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!typedKey)
-            }
-            if let keyProblem {
-                Text(keyProblem).font(.callout).foregroundStyle(.orange)
-            }
-            Button("How to get a free key…") { keyHelp = true }
-                .buttonStyle(.link)
-                .popover(isPresented: $keyHelp, arrowEdge: .bottom) {
-                    OpenSubtitlesKeyHelp { continueWithKey() }
-                }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-    }
-
     private var resultsTable: some View {
         Table(results, selection: $selection) {
             TableColumn("Release") { r in
                 HStack(spacing: 6) {
                     if r.isMatch { MatchTag(exact: r.hashMatch) }
+                    if r.isClose { CloseTag() }
                     if r.foreignPartsOnly { ForcedTag() }
                     Text(r.name)
                         .fontWeight(r.isMatch ? .semibold : .regular)
@@ -136,18 +116,9 @@ struct SubtitleSearchView: View {
                 .width(90)
             TableColumn("Downloads") { r in Text("\(r.downloads)").monospacedDigit() }
                 .width(80)
-            TableColumn("HI") { r in if r.hearingImpaired { Image(systemName: "ear") } }
-                .width(28)
         }
         .contextMenu(forSelectionType: OpenSubtitlesClient.Result.ID.self) { _ in } primaryAction: { _ in download() }
         .frame(minHeight: 260)
-    }
-
-    private func continueWithKey() {
-        guard typedKey else { return }
-        needsKey = false
-        keyProblem = nil
-        search()
     }
 
     /// What the last download said about the day's allowance, for the line under the results.
@@ -162,6 +133,7 @@ struct SubtitleSearchView: View {
         let q = query, lang = language
         busy = true
         message = nil
+        notice = nil
         work = Task {
             defer { busy = false }
             do {
@@ -175,16 +147,16 @@ struct SubtitleSearchView: View {
                                                     videoName: item.baseName)
                 }
                 results = found
+                notice = OpenSubtitlesClient.notice(of: found)
                 selection = found.first?.id
-                let matches = found.filter(\.isMatch).count
-                let count = matches > 0 ? "\(found.count) found, \(matches) made for this video." : "\(found.count) found."
-                message = found.isEmpty ? "No subtitles found." : "\(count) Double-click one, or select it and click Use."
+                message = found.isEmpty ? "No subtitles found." : OpenSubtitlesClient.summary(of: found)
                 if let quotaNote, let shown = message { message = "\(shown) \(quotaNote)" }
             } catch let failure as OpenSubtitlesClient.Failure where failure.isKeyRefused {
-                // Back to the box, saying why, rather than an error down here with nowhere to act on it.
+                // Nothing the person can do about it here, so no talk of keys: say it failed, and log why.
+                guard !Task.isCancelled else { return }
+                ErrorLog.record("Subtitle search", item.url.lastPathComponent, error: failure)
                 results = []
-                needsKey = true
-                keyProblem = "OpenSubtitles didn't accept that key. Check it and try again."
+                message = "OpenSubtitles isn't answering Driftcast right now. Try again later, or check for an update."
             } catch {
                 guard !Task.isCancelled else { return }
                 ErrorLog.record("Subtitle search", item.url.lastPathComponent, error: error)
@@ -229,6 +201,21 @@ private struct ForcedTag: View {
             .background(Capsule().fill(Color.secondary.opacity(0.18)))
             .fixedSize()
             .help("Only the parts in another language, such as signs and foreign dialogue, not the whole film.")
+    }
+}
+
+/// The blue "CLOSE" beside a subtitle that isn't for this release but was taken from the same
+/// kind of source (both Blu-ray, both DVD), which is what mostly decides the timing.
+private struct CloseTag: View {
+    var body: some View {
+        Text("CLOSE")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.blue.opacity(0.18)))
+            .fixedSize()
+            .help("Not made for this exact video, but its name is close to it (the same kind of source, or much the same words), so it is likely in sync.")
     }
 }
 

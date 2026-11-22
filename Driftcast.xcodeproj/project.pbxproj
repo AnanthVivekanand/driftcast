@@ -140,6 +140,7 @@
 			inputPaths = (
 				"$(SRCROOT)/LICENSE",
 				"$(SRCROOT)/NOTICE.md",
+				"$(SRCROOT)/Scripts/embed-subtitle-key.sh",
 				"$(SRCROOT)/Vendor/ffmpeg/ffmpeg",
 				"$(SRCROOT)/Vendor/ffmpeg/ffprobe",
 			);
@@ -151,10 +152,11 @@
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Licenses/NOTICE.txt",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ffmpeg/ffmpeg",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ffmpeg/ffprobe",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenSubtitles.key",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# The licence and acknowledgements travel inside the app (About > Licence).\nLIC=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Licenses\"\nmkdir -p \"$LIC\"\ncp \"$SRCROOT/LICENSE\" \"$LIC/LICENSE.txt\"\ncp \"$SRCROOT/NOTICE.md\" \"$LIC/NOTICE.txt\"\nSRC=\"$SRCROOT/Vendor/ffmpeg\"\nDST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ffmpeg\"\nif [ ! -x \"$SRC/ffmpeg\" ]; then\n  echo \"warning: Vendor/ffmpeg is missing; run Scripts/bundle-ffmpeg.sh. The app will look for Homebrew's ffmpeg instead.\"\n  exit 0\nfi\nrm -rf \"$DST\"\nmkdir -p \"$DST\"\ncp -R \"$SRC\"/ \"$DST\"/\nmkdir -p \"$DST\"\ntouch \"$DST/ffmpeg\" \"$DST/ffprobe\"\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  for f in \"$DST\"/lib/*.dylib \"$DST\"/ffmpeg \"$DST\"/ffprobe; do\n    [ -e \"$f\" ] || continue\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --options runtime --timestamp=none \"$f\"\n  done\nfi\n";
+			shellScript = "set -e\n# Driftcast's OpenSubtitles key, from the keychain; never in the repository.\n\"$SRCROOT/Scripts/embed-subtitle-key.sh\"\n# The licence and acknowledgements travel inside the app (About > Licence).\nLIC=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Licenses\"\nmkdir -p \"$LIC\"\ncp \"$SRCROOT/LICENSE\" \"$LIC/LICENSE.txt\"\ncp \"$SRCROOT/NOTICE.md\" \"$LIC/NOTICE.txt\"\nSRC=\"$SRCROOT/Vendor/ffmpeg\"\nDST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ffmpeg\"\nif [ ! -x \"$SRC/ffmpeg\" ]; then\n  echo \"warning: Vendor/ffmpeg is missing; run Scripts/bundle-ffmpeg.sh. The app will look for Homebrew's ffmpeg instead.\"\n  exit 0\nfi\nrm -rf \"$DST\"\nmkdir -p \"$DST\"\ncp -R \"$SRC\"/ \"$DST\"/\nmkdir -p \"$DST\"\ntouch \"$DST/ffmpeg\" \"$DST/ffprobe\"\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  for f in \"$DST\"/lib/*.dylib \"$DST\"/ffmpeg \"$DST\"/ffprobe; do\n    [ -e \"$f\" ] || continue\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --options runtime --timestamp=none \"$f\"\n  done\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -230,7 +232,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = CBAE6JXBHC;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -243,7 +245,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.leechsoftware.driftcast;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -258,7 +260,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = CBAE6JXBHC;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -271,7 +273,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.leechsoftware.driftcast;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

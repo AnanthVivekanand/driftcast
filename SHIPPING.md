@@ -49,7 +49,7 @@ The repository is `UpdateConfig.repository` (`leechsoftware/driftcast`). No acco
 involved; GitHub's public API allows 60 requests an hour per network address.
 
 **The version number is changed by hand only.** `MARKETING_VERSION` in the project is the
-version (1.1.3 at the time of writing). It stays as it is until the owner decides a new version
+version (1.1.4 at the time of writing). It stays as it is until the owner decides a new version
 is due; nothing bumps it automatically. The app offers an update only when a release's tag is
 a higher number than the version it is running, so a rebuilt 1.1.3 is never offered to a 1.1.3.
 
@@ -79,6 +79,23 @@ right account without changing `gh`'s active login. For `gh` commands use
 `GH_TOKEN=$(security find-generic-password -s driftcast-github -a leechsoftware -w) gh …`.
 
 To see the dialog without a release: `open Driftcast.app --args -ShowAvailableUpdate YES`.
+
+## 2a. The OpenSubtitles key
+
+Driftcast's own OpenSubtitles API key (one per app, from https://www.opensubtitles.com/consumers)
+is never in the repository. It lives in the login keychain of the Mac that builds releases:
+
+    Scripts/set-subtitle-key.sh            # asks for the key, stores item "driftcast-opensubtitles"
+    Scripts/set-subtitle-key.sh --remove
+
+Every build runs `Scripts/embed-subtitle-key.sh` (from the "Bundle ffmpeg" build phase), which
+writes `Contents/Resources/OpenSubtitles.key`: 32 random bytes, then the key XORed with them, so
+the key is never plain text in the app either. It is hidden, not secret: the app must send the
+real key, so a determined person can recover it. A build without the keychain item (a fresh clone,
+CI) has no file, and its online subtitle search says it isn't set up (such a build can be given a
+key with `defaults write com.leechsoftware.driftcast openSubtitlesAPIKey <key>`; the app itself has
+no place to enter one). Don't pass the key in the environment
+(`DRIFTCAST_OPENSUBTITLES_KEY`) for a release: xcodebuild prints build scripts' environment in its log.
 
 ## 3. Signing and notarisation
 

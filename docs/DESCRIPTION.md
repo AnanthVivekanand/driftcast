@@ -238,7 +238,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   captions" and "Turn them on when the audio is in another language", in the caption language
   you choose. When one is ticked, a full track in that language is used, else a forced one
   (signs and foreign lines) in it. With "Search OpenSubtitles when the video has
-  none in this language" on (needs the API key), a video that lacks them is looked up as it
+  none in this language" on, a video that lacks them is looked up as it
   starts — fingerprint first, then title (season and episode for a show) — and the best match
   is downloaded, kept with the video and turned on; this takes a few seconds and is tried once
   per video per run.
@@ -281,17 +281,51 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   menus and a line in their place says to change it in the TV's caption settings; the
   Settings slider stays.
 - **OpenSubtitles.com search** built in: searches by the file's hash and by title, shows
-  language, download count and hearing-impaired marks, downloads as SRT and turns the subtitle
+  language and download count, downloads as SRT and turns the subtitle
   on. Results made for this video are tagged and listed first: **EXACT** when OpenSubtitles
   matched the file's hash, **MATCH** when the subtitle's release name is the file's own or
   comes from the same release group and source (and names no other year or episode; in
   1.1.1 also no other film or cut, and not a whole season's pack). The
-  automatic search therefore downloads a matching subtitle first. Needs a free API key from OpenSubtitles unless the app ships
-  with one. "How to get one…" in the details panel (and the same item in its captions menu)
-  opens the steps: create an account and confirm it by email, open the API Consumers page,
-  save a new consumer, paste the key into the box there (it is the same box as in Settings).
-  The search window opens without a key and asks for it in the middle of the window. OpenSubtitles has no API for creating accounts, so that part is done on their site; a key
-  alone allows 5 downloads a day, "Under development" on the consumer raises it to 100.
+  automatic search therefore downloads a matching subtitle first. After those (new in
+  1.1.4) come ones tagged **CLOSE**: not this release, but with a name near the video's.
+  That is one taken from the same kind of source (both Blu-ray, both DVD, both TV, both
+  streaming) and naming no other cut, which is what mostly decides timing, or one that gives
+  no source but shares two or more of the release's other words, at least one of them more
+  telling than a resolution or a codec (a group, "remastered", "mux").
+  Then come ones whose names don't say, then ones from another source or cut. Within each
+  group the order is by how many of the video's release words the name shares, and only
+  then by downloads. With nothing made for the video, a yellow line above the results says
+  so: "No subtitles found for this exact file name. The first 3 are close to it.", or, when
+  none is near, "No subtitles found for this file name, and none of these are close to it.
+  They may be out of sync." A file whose own name describes no release (a renamed copy)
+  can have no CLOSE results. The hearing-impaired column was taken out (the user's request,
+  2026-11-21). **Looked up by itself** (new in 1.1.4): a video with no captions in the subtitle
+  language is searched for on OpenSubtitles as soon as the details panel shows it or it
+  starts playing (searches cost nothing; downloads do, so nothing is downloaded until asked).
+  When something is found, a pill beside "No closed captions" in the details panel and in the
+  video window (whose captions bar then shows for that video) says how good a match it is:
+  "Exact match found" or "Same release found" in green, "Close match found" in blue. Only
+  those likely to fit are offered: subtitles for the same title only (another source, or a
+  name that says nothing) get no pill, bubble or card, and stay in Find Subtitles Online.
+  A bubble opens from the pill once per video, tagged EXACT MATCH, SAME RELEASE or CLOSE MATCH: for a subtitle made from this very file, "Found subtitles for
+  this movie (or show). Would you like to add them?"; otherwise it says how near the subtitle
+  is to the file. Add Them downloads and adds it (on at once while the video plays), Not Now
+  closes it, "See all on OpenSubtitles…" opens the full search. The captions section of the
+  panel has the same offer in a card of its own above the Closed Captions section, tinted
+  by the match, with Add Them and the link to the full search; the section itself says
+  "Looking on OpenSubtitles…" while it looks, or "None on OpenSubtitles either." In the
+  panel's captions line the pill sits on its own line under "No closed captions". Lookups
+  are kept in `online-subtitles.json`: a subtitle worth offering for 30 days, nothing (or
+  nothing worth offering) for 3; a search that failed is tried again the next time the video
+  is shown. With "I
+  don't care about subtitles" on, nothing is looked up or offered. For an episode of a show the window says
+  which one beside the title box ("Season 1, Episode 2"), since the search is narrowed to it;
+  a film shows nothing there. Nobody is asked for a key:
+  Driftcast sends its own (one per app, not per person), and since 1.1.4 the app has no
+  screen, button or setting about keys. The key is built in from the builder's keychain, never
+  kept in the repository or as plain text in the app (SHIPPING.md section 2a). OpenSubtitles
+  counts downloads per network address; a refused key shows as "OpenSubtitles isn't answering
+  Driftcast right now" and is logged.
 
 ### Playlists and library
 - Any number of named playlists in a sidebar; rename, delete, add videos or folders to each.
@@ -421,8 +455,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   submenu), Disconnect from Chromecast, Search for Devices Again.
 - **Subtitles:** Off, every subtitle track and file, Add Subtitle File…, Find Subtitles
   Online…, Larger Subtitles (⌥⌘=), Smaller Subtitles (⌥⌘−), the Subtitle Size slider (these
-  three are hidden while AirPlaying), Get a Free OpenSubtitles API Key…, Enter API Key…,
-  Subtitle Settings…
+  three are hidden while AirPlaying), Subtitle Settings…
 - **Help:** Driftcast Help, Report a Problem…, Driftcast on GitHub,
   Driftcast Website, Show Error Log (new in 1.1.1).
 - **Right-click on a video:** Play / Resume from 12:34 / Pause / Stop, Play from Beginning, Add
@@ -465,7 +498,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   Dolby surround to Chromecast.
 - **Subtitles:** always turn on closed captions; turn them on when the audio is in another
   language; caption language; search OpenSubtitles when the video has none in that language;
-  convert picture subtitles to text; subtitle size; OpenSubtitles API key; "I don't care
+  convert picture subtitles to text; subtitle size; "I don't care
   about subtitles".
 - Changing a conversion setting while a video plays re-plans and restarts the stream at the
   same position a second later.
@@ -788,6 +821,7 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
 | `~/Library/Caches/Driftcast/Metadata/`, `Artwork/` | film and show details and their posters |
 | `~/Library/Application Support/Driftcast/title-overrides.json` | titles corrected by hand |
 | `~/Library/Application Support/Driftcast/title-names.json` | names typed in the list with Rename (new in 1.1.3) |
+| `~/Library/Application Support/Driftcast/online-subtitles.json` | what OpenSubtitles had for each video looked up by itself (new in 1.1.4): the best result, kept 30 days when worth offering, else 3 |
 | `~/Library/Application Support/Driftcast/watched-videos.json` | the list of videos played (since 1.1.2; in 1.1.1 it is `~/Movies/Videos I have watched on Driftcast.txt` and `.json`) |
 | `~/Library/Logs/Driftcast/Errors.log` | the error log (new in 1.1.1) |
 | `$TMPDIR/DriftcastStreams/<pid>/<session>/` | HLS segments while a video plays; removed when it stops and at quit; folders of copies that are no longer running are cleaned at launch |
@@ -831,7 +865,8 @@ local-network permission.
   was left alone and the new one quit. It has not been tried by double-clicking a video in
   the Finder with two real copies installed, and a copy older than 1.1.2 opened second is
   not stopped.
-- **What was added for 1.1.3** (20 November 2026). The logic harness (656 checks) covers the
+- **What was added for 1.1.3** (20 November 2026). The logic harness (659 checks then; 675 in 1.1.4, the new ones on the built-in key's file,
+  subtitle closeness and order, the search's notice and the lookup's offers and cache) covers the
   names, the orders, the time left, playlists and their saved files, missing videos, where
   later episodes go, the updater, the subtitle readers and the Chromecast messages. The rest
   was tried on screen on macOS 26.2, in a separate copy of the app driven with posted mouse

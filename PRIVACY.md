@@ -24,7 +24,7 @@ Driftcast contacts four kinds of online service. Each one receives only what is 
 |---|---|---|---|
 | Wikipedia and Wikidata (films), TVmaze (shows) | The title read from the file's name, with the year, or the season and episode for a show | When a video is added to a playlist | Turn off "Look up posters and details online" in Settings > General |
 | OMDb | The same title details, and the key you entered | Only if you enter an OMDb key | Remove the key |
-| OpenSubtitles.com | The film or show name, season and episode, the languages you want, a fingerprint computed from the file, and the API key | When you search for subtitles, or as a video starts if you turned on "Search OpenSubtitles when the video has none in this language" | Don't search, and leave that setting off (it is off by default) |
+| OpenSubtitles.com | The film or show name, season and episode, the languages you want, a fingerprint computed from the file, and Driftcast's own API key (the same in every copy, so it doesn't identify you) | When you search for subtitles. Since version 1.1.4, also by itself when you select or play a video that has no captions in your subtitle language, to see whether OpenSubtitles has any (nothing is downloaded until you say so). And as a video starts if you turned on "Search OpenSubtitles when the video has none in this language" | Turn on "I don't care about subtitles" in Settings > Subtitles, which stops the looking by itself, and don't search |
 | GitHub | A request for the newest release of Driftcast | At launch and every eight hours | Turn off "Check for updates automatically" in Settings > General |
 
 - The file itself, its folder path and anything about you are never sent to these services.
@@ -40,7 +40,7 @@ All of this stays on your Mac, and deleting the folders or files removes it.
 
 | Where | What |
 |---|---|
-| `~/Library/Application Support/Driftcast/` | Your playlists, playback positions and watched marks, corrected titles, downloaded subtitles and text read from picture subtitles |
+| `~/Library/Application Support/Driftcast/` | Your playlists, playback positions and watched marks, corrected titles, downloaded subtitles, what OpenSubtitles had for the videos it was asked about (`online-subtitles.json`) and text read from picture subtitles |
 | `~/Library/Caches/Driftcast/` | Poster frames, keyframe indexes, film and show details and their artwork |
 | `~/Library/Preferences/com.leechsoftware.driftcast.plist` | Your settings, including any API keys you enter |
 | The system temporary folder | Video segments while a video plays, removed when it stops |

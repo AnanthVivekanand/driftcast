@@ -3,6 +3,21 @@
 What is new and what was fixed in each version, newest first. Downloads and the notes for
 earlier versions are on the [releases page](https://github.com/leechsoftware/driftcast/releases).
 
+## 1.1.4 (21 November 2026)
+
+### New
+
+- **No OpenSubtitles key needed:** Find Subtitles Online works right away.
+- **Subtitles found for you:** a video with none is looked up on OpenSubtitles by itself, and a bubble offers a likely match.
+- **Closest subtitles first:** results are sorted by how near their name is to your file's, not by downloads.
+- **CLOSE tag** on subtitles from the same kind of source as your file, which are likely in sync.
+- **A yellow notice** says when nothing was made for your file, and whether the first results are close.
+- **TV episodes** show their season and episode beside the search box.
+
+### Changed
+
+- **The key settings are gone** from Settings, the Subtitles menu and the details panel.
+
 ## 1.1.3 (21 November 2026)
 
 ### New

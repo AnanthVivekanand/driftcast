@@ -1056,15 +1056,8 @@ final class PlaybackController: ObservableObject {
     nonisolated static func findSubtitleOnline(for item: MediaItem, language: String, within seconds: Double) async -> URL? {
         await Deadline.first(within: seconds) {
             guard let client = try? OpenSubtitlesClient.fromSettings() else { return nil }
-            let title = await MetadataLookup.shared.title(for: item.url)
-            let hash = OpenSubtitlesClient.movieHash(for: item.url)
             do {
-                var found = try await client.search(query: title.searchQuery, languages: language, movieHash: hash,
-                                                    season: title.season, episode: title.episode, videoName: item.baseName)
-                if found.isEmpty, hash != nil {
-                    found = try await client.search(query: title.searchQuery, languages: language, movieHash: nil,
-                                                    season: title.season, episode: title.episode, videoName: item.baseName)
-                }
+                let found = try await OpenSubtitlesClient.searchVideo(item, language: language)
                 // Listed best first: made from this file, then for its release, then most downloaded.
                 // One that only covers the foreign-language lines isn't the film's subtitles.
                 guard let best = found.first(where: { !$0.foreignPartsOnly }) else { return nil }

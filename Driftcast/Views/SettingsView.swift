@@ -184,13 +184,7 @@ private struct SubtitleSettings: View {
     @AppStorage(Prefs.autoSearchSubtitles) private var autoSearch = false
     @AppStorage(Prefs.hideSubtitleNotices) private var hideNotices = false
     @AppStorage(Prefs.subtitleScale) private var scale = 1.0
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
     @AppStorage(Prefs.ocrSubtitles) private var ocr = true
-    @State private var keyHelp = false
-
-    private var hasKey: Bool {
-        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !OpenSubtitlesClient.builtInKey.isEmpty
-    }
 
     var body: some View {
         Form {
@@ -215,11 +209,9 @@ private struct SubtitleSettings: View {
                     .disabled(auto == SubtitleAuto.always.rawValue)
                 Toggle("Search OpenSubtitles when the video has none in this language", isOn: $autoSearch)
                     .dimmedWhenDisabled()
-                    .disabled(auto == SubtitleAuto.never.rawValue || !hasKey)
+                    .disabled(auto == SubtitleAuto.never.rawValue || !OpenSubtitlesClient.hasKey)
             } footer: {
-                Text(hasKey
-                     ? "Nothing comes on by itself unless one of these is ticked. When the video has no captions in this language, OpenSubtitles can be asked for them as the video starts; that takes a few seconds and the best match is kept with the video."
-                     : "Nothing comes on by itself unless one of these is ticked. Asking OpenSubtitles for missing ones needs the API key below.")
+                Text("Nothing comes on by itself unless one of these is ticked. When the video has no captions in this language, OpenSubtitles can be asked for them as the video starts; that takes a few seconds and the best match is kept with the video.")
             }
             .disabled(hideNotices)
             Section {
@@ -236,23 +228,9 @@ private struct SubtitleSettings: View {
                 // the size applies) was taken out at the user's word, 2026-11-20.
             }
             .disabled(hideNotices)
-            Section {
-                TextField("API key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .dimmedWhenDisabled()
-                Button("How to get a free key…") { keyHelp = true }
-                    .popover(isPresented: $keyHelp, arrowEdge: .bottom) { OpenSubtitlesKeyHelp() }
-            } header: {
-                Text("OpenSubtitles")
-            } footer: {
-                Text(OpenSubtitlesClient.builtInKey.isEmpty
-                     ? "Searching for subtitles online needs a free key from OpenSubtitles. Subtitles that are already in the video, or in a file next to it, work without one."
-                     : "Driftcast includes a key, so this can stay empty. Add your own only if you have an OpenSubtitles account with a higher download limit.")
-            }
-            .disabled(hideNotices)
         }
         .formStyle(.grouped)
-        .frame(height: 611)   // 555 points of content, measured off screen; the window sizes to this
+        .frame(height: 446)   // 390 points of content, measured off screen; the window sizes to this
     }
 }
 

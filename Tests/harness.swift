@@ -1296,7 +1296,7 @@ do {
     check(russianCues.first?.text == "Привет, мир", "Windows-1251 subtitle file reaches the player intact: \(russianCues.first?.text ?? "nil")")
 
     check(OpenSubtitlesClient.Failure.http(403, "").isKeyRefused && OpenSubtitlesClient.Failure.http(401, "").isKeyRefused && OpenSubtitlesClient.Failure.noKey.isKeyRefused
-          && !OpenSubtitlesClient.Failure.http(503, "").isKeyRefused && !OpenSubtitlesClient.Failure.badResponse.isKeyRefused, "only a refused key sends the search dialog back to the key box")
+          && !OpenSubtitlesClient.Failure.http(503, "").isKeyRefused && !OpenSubtitlesClient.Failure.badResponse.isKeyRefused, "only a refused key counts as OpenSubtitles turning the app down")
 
     check(TitleCard.seconds == 3, "the poster card lasts three seconds")
 

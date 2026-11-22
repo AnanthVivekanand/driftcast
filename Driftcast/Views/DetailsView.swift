@@ -18,9 +18,8 @@ struct DetailsView: View {
     @State private var captionsWantedUntil = Date.distantPast
     /// The language captions should be in (Settings > Subtitles); the crossed-out mark reports its absence.
     @AppStorage(Prefs.subtitleLanguage) private var captionLanguage = ""
-    /// The OpenSubtitles sheet and the key steps, opened from the captions line or the section.
+    /// The OpenSubtitles sheet, opened from the captions line or the section.
     @State private var searching = false
-    @State private var keyHelp = false
     @State private var details: MovieDetails?
     @State private var poster: NSImage?
     @State private var still: NSImage?
@@ -59,7 +58,6 @@ struct DetailsView: View {
     private var captionsMissing: Bool {
         !captionsProbing && !captionLanguage.isEmpty && !SubtitleChoice.hasAny(captionChoices, in: captionLanguage)
     }
-    private var hasKey: Bool { OpenSubtitlesClient.hasKey }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -132,11 +130,14 @@ struct DetailsView: View {
                                 FileInfoSection(item: item, info: info, error: infoError, choices: captionChoices)
                                 actions(item)
                                 if !hideNotices {
+                                    OnlineSubtitlesCard(item: current(item),
+                                                        language: captionsMissing ? captionLanguage : nil,
+                                                        seeAll: { searching = true })
                                     SubtitleSection(item: current(item), choices: captionChoices,
                                                     audio: info.flatMap { PlaybackController.preferredAudio($0) },
                                                     probing: captionsProbing,
                                                     missingLanguage: captionsMissing ? captionLanguage : nil,
-                                                    searching: $searching, keyHelp: $keyHelp)
+                                                    searching: $searching)
                                         .id("captions")
                                 }
                             }
@@ -144,7 +145,7 @@ struct DetailsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id("top")
                             // Room for the floating arrow under the last line, so at the foot
-                            // it doesn't sit on the captions section's "How to get one…".
+                            // it doesn't sit on the captions section.
                             Color.clear.frame(height: scroll.overflows ? 34 : 1).id("bottom")
                         }
                         .background(ScrollObserver { scroll = $0 })
@@ -206,11 +207,22 @@ struct DetailsView: View {
             } else {
                 CaptionsIcon(missing: captionsMissing, filled: !captionChoices.isEmpty)
             }
-            Text(captionsText)
-                .font(.callout)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .layoutPriority(1)   // the text wraps; the button keeps its own width
+            VStack(alignment: .leading, spacing: 4) {
+                Text(captionsText)
+                    .font(.callout)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                if captionsMissing, let item {
+                    // Under "No closed captions", on a line of its own (the user's layout,
+                    // 2026-11-21), when OpenSubtitles has some. Its bubble opens by itself here
+                    // only for a video that isn't playing; the video window has it then.
+                    // (While casting, that window shows the casting controls, so it is here again.)
+                    FoundSubtitlesBadge(item: current(item), language: captionLanguage,
+                                        announces: player.nowPlaying?.url != item.url || player.remoteDeviceName != nil,
+                                        seeAll: { searching = true })
+                }
+            }
+            .layoutPriority(1)   // the text wraps; the button keeps its own width
             Spacer(minLength: 8)
             Button("Show") { scrollToCaptions(proxy) }
                 .fixedSize()
@@ -621,12 +633,11 @@ struct SubtitleSection: View {
     /// The Settings language when the video has no full captions in it.
     let missingLanguage: String?
     @Binding var searching: Bool
-    @Binding var keyHelp: Bool
-    /// The small popover with only the key box ("Enter API Key…").
-    @State private var keyEntry = false
     @EnvironmentObject private var player: PlaybackController
     @EnvironmentObject private var library: Library
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
+    /// What OpenSubtitles has for a video with no captions in the subtitle language, looked up
+    /// by itself (the user's request, 2026-11-21).
+    @ObservedObject private var online = OnlineSubtitleLookup.shared
     /// The menu's choice once the user has changed it; until then it mirrors what is on.
     @State private var pick: SubtitleChoice?
     @State private var userPicked = false
@@ -642,9 +653,6 @@ struct SubtitleSection: View {
         return PlaybackController.preferredSubtitle(choices, audio: audio)
     }
     private var shown: SubtitleChoice? { userPicked ? pick : active }
-    private var hasKey: Bool {
-        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !OpenSubtitlesClient.builtInKey.isEmpty
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -672,7 +680,7 @@ struct SubtitleSection: View {
                     if let missingLanguage {
                         HStack(spacing: 6) {
                             NoCaptionsIcon(size: 14)
-                            Text("None in \(Lang.name(missingLanguage) ?? missingLanguage), your subtitle language.")
+                            Text("None in \(Lang.name(missingLanguage) ?? missingLanguage).")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -690,6 +698,7 @@ struct SubtitleSection: View {
                     .controlSize(.small)
                 }
             }
+            if !checking { onlineFinding }
             // Ways to get captions, only when the video has none (the track menu offers them otherwise).
             if !checking, choices.isEmpty {
                 // Each button at its full width: offered the space left over, the first one was
@@ -705,46 +714,21 @@ struct SubtitleSection: View {
                     Spacer(minLength: 0)
                 }
                 .controlSize(.small)
-                if !hasKey {
-                    // The sentence on a line of its own, never wrapped (made a little smaller
-                    // in a narrow panel instead); under it a button to type a key in and the
-                    // link to how to get one (the user's layout, 2026-11-21).
-                    Text("Finding subtitles online needs a free OpenSubtitles key.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    HStack(spacing: 10) {
-                        Button("Enter API Key…") { keyEntry = true }
-                            .controlSize(.small)
-                            .fixedSize()
-                            .help("Type or paste an OpenSubtitles API key you already have")
-                            .popover(isPresented: $keyEntry, arrowEdge: .bottom) {
-                                OpenSubtitlesKeyEntry { searchIfKeyed() }
-                            }
-                        // Drawn as a link, blue and underlined (the user's request, 2026-11-21):
-                        // in the gray of the line around it, it didn't read as something to click.
-                        Button { keyHelp = true } label: {
-                            Text("How to get one…")
-                                .underline()
-                                .foregroundStyle(Color(nsColor: .linkColor))
-                        }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .onHover { inside in if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
-                        Spacer(minLength: 0)
-                    }
-                }
             }
-        }
-        .popover(isPresented: $keyHelp, arrowEdge: .bottom) {
-            // Once a key is entered the search opens by itself.
-            OpenSubtitlesKeyHelp { searchIfKeyed() }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1))
+        .task(id: lookupKey) {
+            guard let language = missingLanguage, !probing else { return }
+            // While it plays, its list is only known once the player has read the file.
+            if isPlaying, player.info == nil { return }
+            // A moment first, so arrowing down the list doesn't search for every row passed.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            await online.look(for: current, language: language)
+        }
         .onChange(of: item.url) { _ in userPicked = false }
         .onChange(of: choices) { now in
             // A track that is no longer there (the video changed) can't stay picked.
@@ -752,10 +736,28 @@ struct SubtitleSection: View {
         }
     }
 
-    /// After a key was entered: the search it was wanted for opens by itself.
-    private func searchIfKeyed() {
-        if OpenSubtitlesClient.hasKey {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { searching = true }
+    private var lookupKey: String { "\(item.url.path)|\(missingLanguage ?? "")|\(probing)|\(player.info == nil)" }
+
+    private var onlineState: OnlineSubtitleLookup.State? {
+        guard let language = missingLanguage, !probing else { return nil }
+        return online.state(for: item.url, language: language)
+    }
+
+    /// The line about the lookup while it runs, or when it found nothing.
+    @ViewBuilder private var onlineFinding: some View {
+        if let state = onlineState {
+            switch state {
+            case .looking:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Looking on OpenSubtitles…").font(.callout).foregroundStyle(.secondary)
+                }
+            case .nothing:
+                Text("None on OpenSubtitles either.").font(.caption).foregroundStyle(.secondary)
+            case .found, .downloading, .failed, .used:
+                // Found: the card above this section offers it.
+                EmptyView()
+            }
         }
     }
 
@@ -773,9 +775,6 @@ struct SubtitleSection: View {
             Divider()
             Button("Find Subtitles Online…") { findOnline() }
             Button("Add Subtitle File…") { player.chooseSubtitleFile(for: current) }
-            if !hasKey {
-                Button("How to Get a Free OpenSubtitles Key…") { keyHelp = true }
-            }
         } label: {
             Text(shown?.label ?? "Off").lineLimit(1)
         }
@@ -806,7 +805,6 @@ struct SubtitleSection: View {
         return choices.first { Lang.matches($0.language, language) && !$0.isForced } ?? choices.first
     }
 
-    /// The search sheet, which asks for a key itself when there is none.
     private func findOnline() { searching = true }
 
     /// Toggles the playing video's captions, or starts this video with the chosen ones.
@@ -819,88 +817,5 @@ struct SubtitleSection: View {
             player.play(current, queue: queue, subtitle: start)
         }
         userPicked = false
-    }
-}
-
-/// The steps to a free OpenSubtitles API key, with a box to paste it into. OpenSubtitles has
-/// no API for creating accounts, so the account itself is made on their website; the key
-/// works as soon as the consumer is saved (it is the account that needs confirming, by email).
-/// Just the box for a key someone already has: "Enter API Key…" under the captions section.
-/// The same setting as Settings > Subtitles and the last step of `OpenSubtitlesKeyHelp`.
-struct OpenSubtitlesKeyEntry: View {
-    /// Called after Done, so the caller can carry on (open the search).
-    var onDone: (() -> Void)? = nil
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("OpenSubtitles API Key").font(.headline)
-            TextField("Paste your key", text: $apiKey)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Text("Also in Settings > Subtitles.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Done") { dismiss(); onDone?() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(16)
-        .frame(width: 300)
-    }
-}
-
-struct OpenSubtitlesKeyHelp: View {
-    /// Called after Done, so the caller can carry on (for example, open the search).
-    var onDone: (() -> Void)? = nil
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
-    @Environment(\.dismiss) private var dismiss
-    static let signUpPage = URL(string: "https://www.opensubtitles.com/en/users/sign_up")!
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Get a free OpenSubtitles API key").font(.headline)
-            step(1, "Create an account",
-                 "Sign up at opensubtitles.com, then open the email they send and click its confirmation link; the account isn't active until you do.",
-                 link: "Open the sign-up page", url: Self.signUpPage)
-            step(2, "Open API Consumers",
-                 "Sign in, then open the API Consumers page (the link below goes straight there) and click New Consumer.",
-                 link: "Open the API Consumers page", url: OpenSubtitlesClient.keyPage)
-            step(3, "Name it and save",
-                 "Any name will do, such as Driftcast. Leave \"Allow anonymous downloads\" ticked so Driftcast can download without signing you in. The page then shows the key.")
-            step(4, "Paste the key here", "It is also kept in Settings > Subtitles.")
-            HStack {
-                TextField("API key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                Button("Done") { dismiss(); onDone?() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            Text("A key on its own allows 5 downloads a day. Ticking \"Under development\" on the consumer raises that to 100 a day for as long as OpenSubtitles permits it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .frame(width: 380)
-    }
-
-    private func step(_ number: Int, _ title: String, _ text: String, link: String? = nil, url: URL? = nil) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(number).")
-                .font(.callout.weight(.semibold))
-                .monospacedDigit()
-                .frame(width: 18, alignment: .trailing)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                if let link, let url {
-                    Link(link, destination: url).font(.callout)
-                }
-            }
-        }
     }
 }

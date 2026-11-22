@@ -16,7 +16,7 @@ Subtitles are where casting from a Mac most often falls down. A Chromecast needs
 
 ## No subtitles in the file?
 
-Choose **Find Subtitles Online…** from the Subtitles menu. Driftcast searches OpenSubtitles by exact file match and by title, and the one you pick downloads and comes on. This needs a free OpenSubtitles API key, and the app shows you how to get one.
+Choose **Find Subtitles Online…** from the Subtitles menu. Driftcast searches OpenSubtitles by exact file match and by title, and the one you pick downloads and comes on.
 
 ## Too small to read?
 

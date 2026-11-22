@@ -180,8 +180,22 @@ struct VideoWindow: View {
     /// The captions bar is for a video that has captions to choose from. With none, a bar saying
     /// so only took room from the picture (the user's call, 2026-11-19); Find Subtitles Online…
     /// is still in the Subtitles menu and behind the playback bar's button.
+    /// It also shows, for a video with none, when subtitles were found online, so the mark
+    /// offering them has a place (the user's request, 2026-11-21).
     private var showsCaptionsBar: Bool {
-        !hideNotices && player.nowPlaying != nil && !player.subtitleChoices.isEmpty
+        guard !hideNotices, let item = player.nowPlaying else { return false }
+        if !player.subtitleChoices.isEmpty { return true }
+        return OnlineSubtitleLookup.shared.offer(for: item.url, language: subtitleLanguage) != nil
+    }
+    @AppStorage(Prefs.subtitleLanguage) private var subtitleLanguage = ""
+    @ObservedObject private var online = OnlineSubtitleLookup.shared
+
+    /// The playing video, once the player has read its list of captions, when none is in the
+    /// subtitle language: looked up online whether or not the details panel is open.
+    private var lookupKey: String {
+        guard let item = player.nowPlaying, player.info != nil, !hideNotices, !subtitleLanguage.isEmpty,
+              !SubtitleChoice.hasAny(player.subtitleChoices, in: subtitleLanguage) else { return "" }
+        return item.url.path + "|" + subtitleLanguage
     }
 
     fileprivate var pictureMinimum: CGSize {
@@ -216,6 +230,12 @@ struct VideoWindow: View {
                     .onAppear { barHeight = geometry.size.height }
                     .onChange(of: geometry.size.height) { barHeight = $0 }
             })
+        }
+        .task(id: lookupKey) {
+            guard !lookupKey.isEmpty, let item = player.nowPlaying else { return }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            await online.look(for: item, language: subtitleLanguage)
         }
         .onAppear {
             fitWindow(casting: castingName != nil)
@@ -451,6 +471,9 @@ struct CaptionsFooter: View {
                 .foregroundStyle(.secondary)   // a quiet note under the picture, not a heading
                 .lineLimit(1)
                 .truncationMode(.tail)
+            if missing, let item = player.nowPlaying {
+                FoundSubtitlesBadge(item: item, language: language, seeAll: { player.showSubtitleSearch = true })
+            }
             Spacer(minLength: 12)
             Menu {
                 SubtitleMenuItems()

@@ -326,10 +326,9 @@ extension HelpCommands {
 }
 
 /// The Subtitles menu in the menu bar: the same choices as the bar's subtitle button, plus
-/// the online search and where to get its API key.
+/// the online search.
 struct SubtitleCommands: Commands {
     @ObservedObject var player: PlaybackController
-    @AppStorage(Prefs.openSubtitlesKey) private var apiKey = ""
     @AppStorage(Prefs.settingsTab) private var settingsTab = "general"
     // Read so that Larger and Smaller enable and disable as the size changes.
     @AppStorage(Prefs.subtitleScale) private var subtitleScale = 1.0
@@ -375,14 +374,7 @@ struct SubtitleCommands: Commands {
                     .disabled(!SubtitleSize.canDecrease)
             }
             Divider()
-            // Reading apiKey keeps this in step with Settings; the built-in key counts too.
-            if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, OpenSubtitlesClient.builtInKey.isEmpty {
-                Button("Get a Free OpenSubtitles API Key…") { NSWorkspace.shared.open(OpenSubtitlesClient.keyPage) }
-                Button("Enter API Key…") { showSubtitleSettings() }
-                // A line between the key items and Settings, as between the menu's other groups
-                // (the user's request, 2026-11-21).
-                Divider()
-            }
+            // The line above keeps Settings apart from the size items (the user's request, 2026-11-21).
             Button("Subtitle Settings…") { showSubtitleSettings() }
         }
     }

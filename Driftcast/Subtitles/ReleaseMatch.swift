@@ -24,6 +24,60 @@ enum ReleaseMatch {
         return sa == nil || sb == nil || sa == sb
     }
 
+    /// How near a subtitle that is not for the same release still is, by its name: 1 when it
+    /// was taken from the same kind of source as the video (both Blu-ray, both DVD) and names
+    /// no other cut, so it is likely in sync, or when no source is given but two or more of
+    /// the release's other words are the video's too (not counting a resolution and codec alone); -1 when it names another source, cut,
+    /// episode or (for a film) year, so it likely isn't; 0 when the names don't say.
+    static func closeness(_ subtitle: String, to video: String) -> Int {
+        let sub = withoutExtension(subtitle), vid = withoutExtension(video)
+        let s = MediaTitle.parse(fileName: sub), v = MediaTitle.parse(fileName: vid)
+        // A show's subtitle often carries the year the show began, not the episode's.
+        if !v.isEpisode, let a = s.year, let b = v.year, a != b { return -1 }
+        if s.isEpisode, v.isEpisode, s.season != v.season || s.episode != v.episode { return -1 }
+        let a = words(sub), b = words(vid)
+        if cut(a) != cut(b) { return -1 }
+        guard let sa = source(a), let sb = source(b) else {
+            // Two shared words, one of them more telling than a resolution or a codec: half the
+            // subtitles of a film share "1080p" and "x264" with any copy of it.
+            let shared = sharedTagWords(sub, with: vid)
+            return shared.count >= 2 && shared.contains(where: { !isCommonTag($0) }) ? 1 : 0
+        }
+        return sa == sb ? 1 : -1
+    }
+
+    /// Words nearly every release of a film carries, which say nothing about which one it is.
+    static func isCommonTag(_ word: String) -> Bool {
+        if word.range(of: #"^\d{3,4}[pi]$"#, options: .regularExpression) != nil { return true }
+        return ["264", "265", "xvid", "divx", "aac", "ac3", "dts", "hdr", "10bit", "8bit", "mp4", "mkv", "avi",
+                "hd", "uhd", "4k", "en", "eng", "english", "sub", "subs", "subtitle", "subtitles"].contains(word)
+    }
+
+    /// How many of the words that describe the video's release (not its title, episode or
+    /// year) the subtitle's name has too: "720p", "bluray", "x264", "reward". The more, the
+    /// nearer the two names, which orders results that are otherwise alike.
+    static func sharedTags(_ subtitle: String, with video: String) -> Int { sharedTagWords(subtitle, with: video).count }
+
+    static func sharedTagWords(_ subtitle: String, with video: String) -> Set<String> {
+        let vid = withoutExtension(video)
+        let title = Set(words(MediaTitle.parse(fileName: vid).title))
+        return tags(withoutExtension(subtitle), title: title).intersection(tags(vid, title: title))
+    }
+
+    private static func tags(_ name: String, title: Set<String>) -> Set<String> {
+        var found = Set<String>()
+        for word in words(name) where word.count > 1 && !title.contains(word) {
+            // "s01e01", "s01", "e01", "1x01" and a year say which video, not which release.
+            if word.range(of: #"^(s\d+(e\d+)?|e\d+|\d+x\d+|(19|20)\d\d)$"#, options: .regularExpression) != nil { continue }
+            switch word {
+            case "x264", "h264", "avc": found.insert("264")
+            case "x265", "h265", "hevc": found.insert("265")
+            default: found.insert(word)
+            }
+        }
+        return found
+    }
+
     /// The words of a name, lower-cased: "The.Sopranos.S04E07.1080p.BluRay.x265-RARBG" ->
     /// the, sopranos, s04e07, 1080p, bluray, x265, rarbg.
     static func words(_ name: String) -> [String] {

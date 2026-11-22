@@ -717,6 +717,15 @@ private func mkvParserChecks(_ work: URL) {
 // MARK: - OpenSubtitles
 
 private func openSubtitlesChecks() {
+    // The built-in key file: 32 mask bytes, then the key XORed with them (Scripts/embed-subtitle-key.sh).
+    let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789xyz"
+    let mask = (0..<32).map { UInt8(($0 * 37 + 11) & 0xFF) }
+    let masked = Array(secret.utf8).enumerated().map { $0.element ^ mask[$0.offset % 32] }
+    let file = Data(mask + masked)
+    check(OpenSubtitlesClient.unmask(file) == secret, "OpenSubtitles: the built-in key is read back from its masked file")
+    check(file.range(of: Data(secret.utf8)) == nil, "OpenSubtitles: the masked key file doesn't hold the key as plain text")
+    check(OpenSubtitlesClient.unmask(Data(mask)) == "" && OpenSubtitlesClient.unmask(Data()) == "",
+          "OpenSubtitles: a key file with no key in it gives no key")
     var result = OpenSubtitlesClient.Result(fileID: 4242, release: "Movie.2019", fileName: "x.srt", language: "../../pt-BR",
                                             downloads: 10, hearingImpaired: false, hashMatch: true, title: "Movie")
     let video = URL(fileURLWithPath: "/v/Movie.2019.mkv")
@@ -732,6 +741,72 @@ private func openSubtitlesChecks() {
     full.foreignPartsOnly = false
     full.hashMatch = false
     check(OpenSubtitlesClient.rank(full) > OpenSubtitlesClient.rank(result), "OpenSubtitles: forced-only results rank after full ones")
+    // Not a match, but near or far by name.
+    let episode = "The.Sopranos.S04E08.1080p.BluRay.x265-RARBG"
+    check(ReleaseMatch.closeness("The.Sopranos.S04E08.1080p.BluRay.ReEnc-DeeJayAhmed", to: episode) == 1,
+          "OpenSubtitles: a subtitle from the same source as the video is close")
+    check(ReleaseMatch.closeness("the.sopranos.s04e08.internal.dvdrip.xvid-runner", to: episode) == -1
+          && ReleaseMatch.closeness("The.Sopranos.S04E09.1080p.BluRay.x265-RARBG", to: episode) == -1
+          && ReleaseMatch.closeness("Heat.1995.Extended.BluRay.x264-GRP", to: "Heat.1995.1080p.BluRay.x264-GRP") == -1,
+          "OpenSubtitles: another source, episode or cut is far")
+    check(ReleaseMatch.closeness("\"Sopranos, The\" (1999)", to: episode) == 0
+          && ReleaseMatch.closeness("The.Sopranos.S04E08.1080p.BluRay.ReEnc-DeeJayAhmed", to: "The Sopranos S04E08 Copy") == 0,
+          "OpenSubtitles: names that give no source are neither close nor far")
+    var close = full, unknown = full, far = full, same = full
+    close.closeness = 1; far.closeness = -1; same.releaseMatch = true
+    close.downloads = 1; unknown.downloads = 50_000; far.downloads = 90_000
+    check(OpenSubtitlesClient.rank(same) > OpenSubtitlesClient.rank(close) && OpenSubtitlesClient.rank(close) > OpenSubtitlesClient.rank(unknown)
+          && OpenSubtitlesClient.rank(unknown) > OpenSubtitlesClient.rank(far) && OpenSubtitlesClient.rank(far) > OpenSubtitlesClient.rank(result),
+          "OpenSubtitles: same release, then same source, then unknown, then another source, then forced-only, whatever the downloads")
+    check(OpenSubtitlesClient.notice(of: [unknown, far]) == "No subtitles found for this file name, and none of these are close to it. They may be out of sync."
+          && OpenSubtitlesClient.notice(of: [close, unknown]) == "No subtitles found for this exact file name. The first one is close to it."
+          && OpenSubtitlesClient.notice(of: [close, close, far]) == "No subtitles found for this exact file name. The first 2 are close to it."
+          && OpenSubtitlesClient.notice(of: [same, close]) == nil && OpenSubtitlesClient.notice(of: []) == nil
+          && OpenSubtitlesClient.summary(of: [same, close]).hasPrefix("2 found, 1 made for this video."),
+          "OpenSubtitles: the search warns when nothing was made for this video, and says whether the first ones are close")
+    // The details panel's own lookup: what it says, and how long a lookup is kept.
+    check(OnlineSubtitleLookup.describe(same) == "Made for this release, so it should be in sync."
+          && OnlineSubtitleLookup.describe(close) == "Close to this file, so it is likely in sync."
+          && OnlineSubtitleLookup.describe(unknown) == "For this title, not this file, so it may be out of sync.",
+          "OpenSubtitles lookup: the panel says how near the found subtitle is")
+    check(OnlineSubtitleLookup.Match(same).found == "Same release found" && OnlineSubtitleLookup.Match(close).found == "Close match found"
+          && OnlineSubtitleLookup.Match(unknown).found == "Subtitles found online" && OnlineSubtitleLookup.Match(unknown).tag == "SAME TITLE ONLY",
+          "OpenSubtitles lookup: the pill and the tag say how good a match was found")
+    check(OnlineSubtitleLookup.isOffered(same) && OnlineSubtitleLookup.isOffered(close) && !OnlineSubtitleLookup.isOffered(unknown)
+          && !OnlineSubtitleLookup.isOffered(far),
+          "OpenSubtitles lookup: only likely matches are offered, not ones for the same title only")
+    var exactResult = unknown; exactResult.hashMatch = true
+    check(OnlineSubtitleLookup.Match(exactResult).found == "Exact match found" && OnlineSubtitleLookup.Match(exactResult).tag == "EXACT MATCH",
+          "OpenSubtitles lookup: a subtitle made from this file is an exact match")
+    let now = Date()
+    let foundEntry = OnlineSubtitleLookup.Saved(best: close, count: 3, checked: now.addingTimeInterval(-20 * 86_400))
+    let noneEntry = OnlineSubtitleLookup.Saved(best: nil, count: 0, checked: now.addingTimeInterval(-2 * 86_400))
+    check(OnlineSubtitleLookup.isFresh(foundEntry, now: now) && OnlineSubtitleLookup.isFresh(noneEntry, now: now)
+          && !OnlineSubtitleLookup.isFresh(foundEntry, now: now.addingTimeInterval(11 * 86_400))
+          && !OnlineSubtitleLookup.isFresh(noneEntry, now: now.addingTimeInterval(2 * 86_400)),
+          "OpenSubtitles lookup: a found subtitle is kept 30 days, \"none\" 3 days")
+    let weakEntry = OnlineSubtitleLookup.Saved(best: unknown, count: 9, checked: now.addingTimeInterval(-4 * 86_400))
+    check(!OnlineSubtitleLookup.isFresh(weakEntry, now: now),
+          "OpenSubtitles lookup: a result not worth offering is looked up again after 3 days")
+    let savedBack = (try? JSONEncoder().encode(["k": foundEntry])).flatMap { try? JSONDecoder().decode([String: OnlineSubtitleLookup.Saved].self, from: $0) }
+    check(savedBack?["k"]?.best == close && savedBack?["k"]?.count == 3,
+          "OpenSubtitles lookup: a saved lookup reads back as it was written")
+    // Within a group, the name nearest the file's comes before a more downloaded one.
+    let reward = "Breaking.Bad.S01E01.720p.BluRay.x264-REWARD"
+    check(ReleaseMatch.sharedTags("Breaking.Bad.S01.720p.BluRay.X264-REWARD", with: reward) == 4
+          && ReleaseMatch.sharedTags("Breaking.Bad.S01E01.BDRIP.x264.Hun.Eng-Krissz", with: reward) == 1
+          && ReleaseMatch.sharedTags("Breaking Bad - season 1", with: reward) == 0,
+          "OpenSubtitles: shared release words are counted, not the title or the episode")
+    check(ReleaseMatch.closeness("Breaking.Bad.S01E01.720p.x264-REWARD", to: reward) == 1
+          && ReleaseMatch.closeness("Breaking Bad Season 1 Episode 01 - Pilot", to: reward) == 0,
+          "OpenSubtitles: a name with no source is close when it shares the release's other words")
+    check(ReleaseMatch.closeness("Breaking.Bad.S01E01.720p.x264", to: "Breaking.Bad.S01E01.720p.x264.mux") == 0
+          && ReleaseMatch.closeness("Breaking.Bad.S01E01.720p.mux", to: "Breaking.Bad.S01E01.720p.x264.mux") == 1,
+          "OpenSubtitles: a shared resolution and codec alone don't make a subtitle close")
+    var near = close, popular = close
+    near.sharedTags = 4; near.downloads = 100; popular.sharedTags = 1; popular.downloads = 900_000
+    check(OpenSubtitlesClient.order(near) > OpenSubtitlesClient.order(popular) && OpenSubtitlesClient.order(popular) > OpenSubtitlesClient.order(unknown),
+          "OpenSubtitles: among close results the nearest name is first, whatever the downloads")
     check(OpenSubtitlesClient.apiLanguages("pt") == "pt-br,pt-pt" && OpenSubtitlesClient.apiLanguages("nb") == "no"
           && OpenSubtitlesClient.apiLanguages("zh") == "zh-cn,zh-tw" && OpenSubtitlesClient.apiLanguages("EN") == "en",
           "OpenSubtitles: language codes as the API lists them")
