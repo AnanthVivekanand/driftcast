@@ -464,7 +464,10 @@ struct MediaRow: View {
                 if let poster {
                     Image(nsImage: poster).resizable().aspectRatio(contentMode: .fill)
                 } else {
-                    Image(systemName: failed ? "exclamationmark.triangle" : "film").foregroundStyle(.secondary)
+                    // Red when the file is gone (the user's request, 2026-11-22); gray for one
+                    // that is there but can't be read.
+                    Image(systemName: failed ? "exclamationmark.triangle" : "film")
+                        .foregroundStyle(missing ? Color.red : Color.secondary)
                 }
             }
             .frame(width: 96, height: 54)

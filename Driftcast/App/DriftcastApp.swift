@@ -56,6 +56,7 @@ struct DriftcastApp: App {
         Window("Video", id: "video") {
             VideoWindow()
                 .environmentObject(player)
+                .environmentObject(discovery)   // for the cast button's list of TVs
         }
         .handlesExternalEvents(matching: [])
         .defaultSize(width: 960, height: 540)

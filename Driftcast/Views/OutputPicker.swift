@@ -10,42 +10,7 @@ struct OutputPicker: View {
     var body: some View {
         HStack(spacing: 2) {
             Menu {
-                Button {
-                    player.selectOutput(.local)
-                } label: {
-                    // Not ticked while an AirPlay TV is showing the video.
-                    Label("This Mac", systemImage: player.output == .local && !player.isAirPlaying ? "checkmark" : "laptopcomputer")
-                }
-                Section("Chromecast") {
-                    let screens = discovery.devices.filter { !$0.isAudioOnly }
-                    if screens.isEmpty {
-                        Text(discovery.problem.map { "Can't search: \($0)" }
-                             ?? (discovery.searchedAWhile ? "None found on this network" : "Searching the network…"))
-                    }
-                    ForEach(screens) { device in
-                        deviceButton(device)
-                    }
-                }
-                let speakers = discovery.devices.filter(\.isAudioOnly)
-                if !speakers.isEmpty {
-                    Section("Speakers (audio only)") {
-                        ForEach(speakers) { device in deviceButton(device) }
-                    }
-                }
-                Section("AirPlay") {
-                    Button {
-                        player.selectOutput(.local)
-                        AirPlayPicker.shared.presentSoon(openVideoWindow: player.nowPlaying == nil ? nil : { player.showVideoWindow() })
-                    } label: {
-                        Label("Apple TV or AirPlay TV…", systemImage: "airplayvideo")
-                    }
-                }
-                if case .cast = player.output {
-                    Divider()
-                    Button("Disconnect") { player.disconnectCast() }
-                }
-                Divider()
-                Button("Search Again") { discovery.restart() }
+                OutputMenuItems()
             } label: {
                 Label(player.outputName, systemImage: player.outputSymbol)
                     .labelStyle(.titleAndIcon)
@@ -72,13 +37,81 @@ struct OutputPicker: View {
     }
 }
 
-extension OutputPicker {
-    fileprivate func deviceButton(_ device: CastDeviceInfo) -> some View {
+/// Where to play: this Mac, each Chromecast found, AirPlay. The body of the toolbar's picker
+/// and of the video window's cast button.
+struct OutputMenuItems: View {
+    @EnvironmentObject private var player: PlaybackController
+    @EnvironmentObject private var discovery: CastDiscovery
+
+    var body: some View {
+        Button {
+            player.selectOutput(.local)
+        } label: {
+            // Not ticked while an AirPlay TV is showing the video.
+            Label("This Mac", systemImage: player.output == .local && !player.isAirPlaying ? "checkmark" : "laptopcomputer")
+        }
+        Section("Chromecast") {
+            let screens = discovery.devices.filter { !$0.isAudioOnly }
+            if screens.isEmpty {
+                Text(discovery.problem.map { "Can't search: \($0)" }
+                     ?? (discovery.searchedAWhile ? "None found on this network" : "Searching the network…"))
+            }
+            ForEach(screens) { device in
+                deviceButton(device)
+            }
+        }
+        let speakers = discovery.devices.filter(\.isAudioOnly)
+        if !speakers.isEmpty {
+            Section("Speakers (audio only)") {
+                ForEach(speakers) { device in deviceButton(device) }
+            }
+        }
+        Section("AirPlay") {
+            Button {
+                player.selectOutput(.local)
+                AirPlayPicker.shared.presentSoon(openVideoWindow: player.nowPlaying == nil ? nil : { player.showVideoWindow() })
+            } label: {
+                Label("Apple TV or AirPlay TV…", systemImage: "airplayvideo")
+            }
+        }
+        if case .cast = player.output {
+            Divider()
+            Button("Disconnect") { player.disconnectCast() }
+        }
+        Divider()
+        Button("Search Again") { discovery.restart() }
+    }
+
+    private func deviceButton(_ device: CastDeviceInfo) -> some View {
         Button {
             player.selectOutput(.cast(device))
         } label: {
             Label(device.name, systemImage: player.output == .cast(device) ? "checkmark" : device.symbol)
         }
+    }
+}
+
+/// The cast button in the video window: an icon that opens the same choices as the toolbar's
+/// picker. The window's own controls (1.1.3) replaced the system's, and with them went its
+/// only way to send the video to a TV (the user's report, 2026-11-22). Tinted while the
+/// video is on a TV.
+struct CastButton: View {
+    @EnvironmentObject private var player: PlaybackController
+
+    private var elsewhere: Bool { player.output != .local || player.isAirPlaying }
+
+    var body: some View {
+        Menu {
+            OutputMenuItems()
+        } label: {
+            Image(systemName: player.output == .local ? "airplayvideo" : player.outputSymbol)
+                .foregroundStyle(elsewhere ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(elsewhere ? "Playing on \(player.outputName). Click to choose where to play." : "Play on a TV: Chromecast or AirPlay")
+        .accessibilityLabel("Choose where to play")
     }
 }
 
@@ -413,6 +446,8 @@ private struct CastingControls: View {
             .help("Next video")
             .accessibilityLabel("Next video")
             TimelineRow(clock: player.clock)
+            // To move the video to another TV or back to this Mac from here.
+            CastButton()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -484,6 +519,8 @@ struct CaptionsFooter: View {
             .controlSize(.small)
             .fixedSize()
             .help("Closed captions")
+            // The window's lower right corner (the user's placing, 2026-11-22).
+            CastButton()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -616,6 +653,7 @@ private struct VideoControls: View {
                 }
                 .help(player.deviceMuted ? "Unmute" : "Mute")
                 .accessibilityLabel(player.deviceMuted ? "Unmute" : "Mute")
+                .frame(width: 62, alignment: .leading)   // as wide as the two buttons at the right
                 Spacer(minLength: 8)
                 HStack(spacing: 20) {
                     Button { player.previous() } label: { Image(systemName: "backward.end.fill") }
@@ -641,12 +679,17 @@ private struct VideoControls: View {
                         .accessibilityLabel("Next video")
                 }
                 Spacer(minLength: 8)
-                Button { Self.toggleFullScreen() } label: {
-                    Image(systemName: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .frame(width: 28)
+                HStack(spacing: 6) {
+                    // Here too: a video with no captions has no bar under the picture.
+                    CastButton().frame(width: 28)
+                    Button { Self.toggleFullScreen() } label: {
+                        Image(systemName: fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .frame(width: 28)
+                    }
+                    .help(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
+                    .accessibilityLabel(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
                 }
-                .help(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
-                .accessibilityLabel(fullScreen ? "Exit Full Screen" : "Enter Full Screen")
+                .frame(width: 62, alignment: .trailing)
             }
             .buttonStyle(.borderless)
             .font(.system(size: 15))

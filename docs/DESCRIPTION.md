@@ -36,7 +36,13 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   converting as it plays (there is no way to make them skip), had no Next or Previous, and
   their timeline moved the player without Driftcast knowing, so the next skip could start
   the video over. What went with them: the speed menu, picture-in-picture, chapters and
-  the share button in that window.
+  the share button in that window. The AirPlay button went with them too, leaving the
+  window with no way to send the video to a TV (the user's report, 2026-11-22): a **cast
+  button** (`CastButton`) is now at the right end of the bar under the picture (the
+  captions bar, or the casting bar while a TV plays) and beside full screen in the controls
+  over the picture, for a video with no bar. It opens the toolbar picker's choices (This
+  Mac, each Chromecast, AirPlay, Disconnect; `OutputMenuItems`) and is tinted while the
+  video is on a TV.
 - **The video window stays in front of the main window** (new in 1.1.3). macOS brings forward
   only the window that was clicked, so a click on the main window used to cover the video,
   and a click on the main window with Driftcast behind another app brought the list back and
@@ -116,8 +122,21 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   sits at the top, above the show's poster, and the panel is open every time Driftcast
   starts (it can be closed for the session). The ratings sit at the right edge beside the
   year and genre lines (`TitleFactsRow`; the user's request, 2026-11-22: they had a row of
-  their own under the captions line); several that don't fit beside the text (a film's
-  IMDb, Rotten Tomatoes and Metacritic) go under it. The main window opens 980 by 746
+  their own under the captions line); the genres keep to one line, a list too long for the room being cut
+  short with "…" (the whole list is in its tooltip), so the ratings stay beside the text
+  unless the first line itself doesn't fit next to them (a film's IMDb, Rotten Tomatoes and
+  Metacritic), when they go under the text, still at the right. The year, which leads the first line, is in black and the rest of the
+  line gray (the user's request, 2026-11-22; all of it was gray). In the list, a video whose file is gone shows its warning
+  triangle in red where its picture was (same day; it was gray, as it still is for a file
+  that is there but can't be read). An episode's air date is the line under the genres, "Aired 2002-11-03" (the
+  user's placing, 2026-11-22; it was a row of its own under the cast). A film with no poster shows a picture taken from the file itself; that
+  one is not at the top of the panel, where a poster goes, but under the captions line
+  (same day). A real poster stays at the top. For an episode whose own picture is at the
+  top, the show's poster is no longer under it at full width (the pair "looked a little
+  weird"): it is small (64 points wide) under the episode's name, beside the year and
+  genres, which start one line down from the poster's top, with an empty line between the
+  episode's name and that row; the picture's place is kept in gray while it loads, and if it doesn't come the
+  poster takes the top again. The main window opens 980 by 746
   points the first time (670 high in 1.1.2, 620 before), so that the panel shows an
   episode's still, the show's poster and the title lines under it without scrolling; after
   that macOS remembers the size. The

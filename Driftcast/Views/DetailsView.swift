@@ -22,7 +22,12 @@ struct DetailsView: View {
     @State private var searching = false
     @State private var details: MovieDetails?
     @State private var poster: NSImage?
+    /// True when `poster` is a picture taken from the video file itself, no poster having
+    /// been found online.
+    @State private var posterIsCapture = false
     @State private var still: NSImage?
+    /// True when an episode's picture was asked for and didn't come.
+    @State private var stillLoadFailed = false
     @State private var info: MediaInfo?
     @State private var infoError: String?
     @State private var looking = false
@@ -101,9 +106,13 @@ struct DetailsView: View {
                                 artwork
                                 heading(item)
                                 if !hideNotices { captionsLine(proxy) }
+                                captureBelow(item)
                                 if let details {
                                     facts(details)
-                                    if details.isEpisode { episodeBlock(details) }
+                                    // (Not when it has nothing to say, or it leaves a gap.)
+                                    if details.isEpisode, details.episodeSynopsis?.isEmpty == false || details.synopsis != nil {
+                                        episodeBlock(details)
+                                    }
                                     if let synopsis = details.synopsis, !synopsis.isEmpty {
                                         Text(synopsis)
                                             .font(.callout)
@@ -254,8 +263,10 @@ struct DetailsView: View {
     }
 
     @ViewBuilder private var artwork: some View {
-        // An episode's own picture first, above the show's poster, always (the user's call,
-        // 2026-11-20); it was further down, with the episode's air date and synopsis.
+        // An episode's own picture first, always (the user's call, 2026-11-20); it was further
+        // down, with the episode's air date and synopsis. It is the one big picture: the
+        // show's poster, which stood under it at full width, is small under the episode's
+        // name (`posterBesideTitle`; two days later, the pair "looked a little weird").
         if let still {
             Image(nsImage: still)
                 .resizable()
@@ -263,15 +274,16 @@ struct DetailsView: View {
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .shadow(radius: 4, y: 2)
+        } else if awaitingStill {
+            // Its place kept while it loads, so the panel doesn't jump when it arrives.
+            RoundedRectangle(cornerRadius: 8).fill(.quaternary).aspectRatio(16.0 / 9, contentMode: .fit)
         }
         if let poster {
-            Image(nsImage: poster)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .frame(maxHeight: 300)   // a portrait poster must leave the title and plot in view
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .shadow(radius: 4, y: 2)
+            // (A film's picture taken from the file is further down: `captureBelow`. With an
+            // episode's own picture, a poster is beside the title and a capture isn't needed.)
+            if !capturePlacedBelow, !episodeHasPicture { picture(poster) }
+        } else if episodeHasPicture {
+            EmptyView()
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(.quaternary)
@@ -279,6 +291,40 @@ struct DetailsView: View {
             }
             .frame(height: 150)
         }
+    }
+
+    private func picture(_ image: NSImage) -> some View {
+        Image(nsImage: image)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: 300)   // a portrait poster must leave the title and plot in view
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 4, y: 2)
+    }
+
+    /// An episode's own picture is on its way.
+    private var awaitingStill: Bool { still == nil && details?.episodeImageURL != nil && !stillLoadFailed }
+
+    /// The top of the panel is, or is about to be, an episode's own picture.
+    private var episodeHasPicture: Bool { still != nil || awaitingStill }
+
+    /// The show's poster goes small, under the episode's name, when the episode's picture has the top.
+    private var posterBesideTitle: Bool { episodeHasPicture && poster != nil && !posterIsCapture }
+
+    /// Whether the video is a film and not an episode of a show: by what was found online,
+    /// else by its name.
+    private var isFilm: Bool {
+        !(details?.isEpisode ?? parsed?.isEpisode ?? item?.parsedTitle.isEpisode ?? false)
+    }
+
+    /// A film with no poster shows a picture taken from the file. That one doesn't go at the
+    /// top of the panel, where a poster would, but under the captions line (the user's call,
+    /// 2026-11-22). A real poster, and anything for an episode, stays at the top.
+    private var capturePlacedBelow: Bool { posterIsCapture && isFilm }
+
+    @ViewBuilder private func captureBelow(_ item: MediaItem) -> some View {
+        if capturePlacedBelow, let poster { picture(poster) }
     }
 
     /// The panel's heading: the film or show as it was found online. With nothing found, the
@@ -309,18 +355,40 @@ struct DetailsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            let year = details?.year.map(String.init) ?? parsed?.year.map(String.init)
             let line = [
-                details?.year.map(String.init) ?? parsed?.year.map(String.init),
                 details?.runtimeText ?? info.flatMap { $0.duration > 0 ? formatTime($0.duration) : nil },
                 details?.certificate,
                 details?.network,
             ].compactMap { $0 }
-            // The year, length and genres, with the ratings at the right edge beside them.
+            // The year (in black), length and genres, with the ratings at the right edge beside them.
             let genres = details.flatMap { $0.genres.isEmpty ? nil : $0.genres.joined(separator: ", ") }
-            if !line.isEmpty || genres != nil || details?.ratings.isEmpty == false {
-                TitleFactsRow(facts: line.isEmpty ? nil : line.joined(separator: " · "), genres: genres,
-                              ratings: details?.ratings ?? [])
+            // An episode's air date is the line under the genres (it was under the cast).
+            let aired = details.flatMap { $0.isEpisode ? $0.airDate : nil }
+            let hasFacts = year != nil || !line.isEmpty || genres != nil || aired != nil || details?.ratings.isEmpty == false
+            // With an episode's picture at the top, the show's poster is here, small, under
+            // the episode's name and beside the year and genres (the user's placing).
+            HStack(alignment: .top, spacing: 10) {
+                if posterBesideTitle, let poster {
+                    Image(nsImage: poster)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .shadow(radius: 2, y: 1)
+                        .padding(.top, 4)
+                }
+                if hasFacts {
+                    TitleFactsRow(year: year, facts: line.isEmpty ? nil : line.joined(separator: " · "), genres: genres,
+                                  ratings: details?.ratings ?? [], aired: aired)
+                        // Beside the poster, an empty line above the year (the user's
+                        // request, 2026-11-22): flush with the poster's top it sat too high.
+                        .padding(.top, posterBesideTitle ? 20 : 0)
+                }
             }
+            // An empty line between the episode's name and the poster's row (the user's
+            // request, 2026-11-22).
+            .padding(.top, posterBesideTitle ? 14 : 0)
         }
     }
 
@@ -341,7 +409,6 @@ struct DetailsView: View {
 
     private func episodeBlock(_ details: MovieDetails) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let date = details.airDate { fact("Aired", date) }
             if let synopsis = details.episodeSynopsis, !synopsis.isEmpty {
                 Text(synopsis).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
@@ -423,7 +490,7 @@ struct DetailsView: View {
     /// stays until they answer (and if they don't).
     private func load(_ item: MediaItem, refresh: Bool = false) async {
         if !refresh {
-            details = nil; poster = nil; still = nil; info = nil; infoError = nil; fileChoices = []
+            details = nil; poster = nil; posterIsCapture = false; still = nil; stillLoadFailed = false; info = nil; infoError = nil; fileChoices = []
             captionsWantedUntil = .distantPast   // another video: its panel starts at rest
         }
         let title = await MetadataLookup.shared.title(for: item.url)
@@ -445,7 +512,7 @@ struct DetailsView: View {
         guard isShowing(item) else { return }
         looking = false
         if poster == nil, let data = await Thumbnailer.shared.poster(for: item.url, duration: info?.duration ?? 0) {
-            if isShowing(item), poster == nil { poster = NSImage(data: data) }
+            if isShowing(item), poster == nil { poster = NSImage(data: data); posterIsCapture = poster != nil }
         }
         await probe
     }
@@ -463,10 +530,14 @@ struct DetailsView: View {
 
     private func loadImages(_ details: MovieDetails, item: MediaItem) async {
         if let url = details.posterURL, let data = await MetadataLookup.shared.artwork(url), let image = NSImage(data: data) {
-            if isShowing(item) { poster = image }
+            if isShowing(item) { poster = image; posterIsCapture = false }
         }
-        if let url = details.episodeImageURL, let data = await MetadataLookup.shared.artwork(url), let image = NSImage(data: data) {
-            if isShowing(item) { still = image }
+        if let url = details.episodeImageURL {
+            if let data = await MetadataLookup.shared.artwork(url), let image = NSImage(data: data) {
+                if isShowing(item) { still = image }
+            } else if isShowing(item) {
+                stillLoadFailed = true   // the poster takes the top again
+            }
         }
     }
 
@@ -479,7 +550,7 @@ struct DetailsView: View {
         await MetadataLookup.shared.setTitle(corrected, for: item.url)
         library.objectWillChange.send()   // the list shows the name too
         correcting = false
-        details = nil; poster = nil; still = nil
+        details = nil; poster = nil; posterIsCapture = false; still = nil; stillLoadFailed = false
         parsed = corrected
         looking = true
         var found = await MetadataLookup.shared.details(for: corrected, refresh: true)
