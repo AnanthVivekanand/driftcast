@@ -114,7 +114,10 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   the season and episode number, the episode's name (since 1.1.2 on its own line under
   them, not after a colon), air date, still and synopsis. Since 1.1.3 an episode's still
   sits at the top, above the show's poster, and the panel is open every time Driftcast
-  starts (it can be closed for the session). The main window opens 980 by 746
+  starts (it can be closed for the session). The ratings sit at the right edge beside the
+  year and genre lines (`TitleFactsRow`; the user's request, 2026-11-22: they had a row of
+  their own under the captions line); several that don't fit beside the text (a film's
+  IMDb, Rotten Tomatoes and Metacritic) go under it. The main window opens 980 by 746
   points the first time (670 high in 1.1.2, 620 before), so that the panel shows an
   episode's still, the show's poster and the title lines under it without scrolling; after
   that macOS remembers the size. The

@@ -102,7 +102,6 @@ struct DetailsView: View {
                                 heading(item)
                                 if !hideNotices { captionsLine(proxy) }
                                 if let details {
-                                    if !details.ratings.isEmpty { ratingsRow(details) }
                                     facts(details)
                                     if details.isEpisode { episodeBlock(details) }
                                     if let synopsis = details.synopsis, !synopsis.isEmpty {
@@ -316,29 +315,11 @@ struct DetailsView: View {
                 details?.certificate,
                 details?.network,
             ].compactMap { $0 }
-            if !line.isEmpty {
-                Text(line.joined(separator: " · "))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            if let details, !details.genres.isEmpty {
-                Text(details.genres.joined(separator: ", "))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func ratingsRow(_ details: MovieDetails) -> some View {
-        HStack(spacing: 10) {
-            ForEach(details.ratings, id: \.source) { rating in
-                VStack(spacing: 1) {
-                    Text(rating.value).font(.callout.weight(.semibold)).monospacedDigit()
-                    Text(rating.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            // The year, length and genres, with the ratings at the right edge beside them.
+            let genres = details.flatMap { $0.genres.isEmpty ? nil : $0.genres.joined(separator: ", ") }
+            if !line.isEmpty || genres != nil || details?.ratings.isEmpty == false {
+                TitleFactsRow(facts: line.isEmpty ? nil : line.joined(separator: " · "), genres: genres,
+                              ratings: details?.ratings ?? [])
             }
         }
     }

@@ -19,6 +19,7 @@ earlier versions are on the [releases page](https://github.com/leechsoftware/dri
 ### Changed
 
 - **The key settings are gone** from Settings, the Subtitles menu and the details panel.
+- **Ratings** sit at the right of the details panel, beside the year and genres.
 
 ## 1.1.3 (21 November 2026)
 
