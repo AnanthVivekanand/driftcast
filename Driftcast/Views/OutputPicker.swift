@@ -514,6 +514,7 @@ struct SubtitleMenuItems: View {
             }
         }
         Divider()
+        FoundSubtitleMenuItem()
         Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
         Button("Add Subtitle File…") { player.chooseSubtitleFile() }
         RemoveSubtitleMenu()

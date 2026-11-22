@@ -329,7 +329,14 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   on the Mac. One that came from OpenSubtitles (told by the result number in its name,
   `OpenSubtitlesClient.fileID(ofDownloaded:)`) is remembered per video in
   `online-subtitles.json` and is passed over from then on, by the lookup and by the search
-  made as a video starts; the video is looked up afresh, so the next best can be offered. For an episode of a show the window says
+  made as a video starts; the video is looked up afresh, so the next best can be offered. **In the subtitle menus**
+  (the user's request, 2026-11-22: the match showed only in the bubble and the card): when
+  the lookup has a likely match for the video, the Subtitles menu, the details panel's
+  captions menu and the video window's CC menu carry an item named for it, "Add English
+  Subtitles Found Online (Close Match)" (`OnlineSubtitleLookup.menuTitle`), which downloads
+  it, adds it and turns it on in one click (`PlaybackController.addFoundSubtitle`); a
+  failure shows in an alert, a menu having nowhere to say it. The item goes once the video
+  has subtitles in the language. For an episode of a show the window says
   which one beside the title box ("Season 1, Episode 2"), since the search is narrowed to it;
   a film shows nothing there. Nobody is asked for a key:
   Driftcast sends its own (one per app, not per person), and since 1.1.4 the app has no
@@ -876,7 +883,7 @@ local-network permission.
   was left alone and the new one quit. It has not been tried by double-clicking a video in
   the Finder with two real copies installed, and a copy older than 1.1.2 opened second is
   not stopped.
-- **What was added for 1.1.3** (20 November 2026). The logic harness (659 checks then; 678 in 1.1.4, the new ones on the built-in key's file,
+- **What was added for 1.1.3** (20 November 2026). The logic harness (659 checks then; 679 in 1.1.4, the new ones on the built-in key's file,
   subtitle closeness and order, the search's notice and the lookup's offers and cache) covers the
   names, the orders, the time left, playlists and their saved files, missing videos, where
   later episodes go, the updater, the subtitle readers and the Chromecast messages. The rest

@@ -788,6 +788,8 @@ private func openSubtitlesChecks() {
     let weakEntry = OnlineSubtitleLookup.Saved(best: unknown, count: 9, checked: now.addingTimeInterval(-4 * 86_400))
     check(!OnlineSubtitleLookup.isFresh(weakEntry, now: now),
           "OpenSubtitles lookup: a result not worth offering is looked up again after 3 days")
+    check(OnlineSubtitleLookup.menuTitle(close, language: "en") == "Add English Subtitles Found Online (Close Match)",
+          "OpenSubtitles lookup: the subtitle menus' item says the language and how good the match is (\(OnlineSubtitleLookup.menuTitle(close, language: "en")))")
     let savedBack = (try? JSONEncoder().encode(["k": foundEntry])).flatMap { try? JSONDecoder().decode([String: OnlineSubtitleLookup.Saved].self, from: $0) }
     check(savedBack?["k"]?.best == close && savedBack?["k"]?.count == 3,
           "OpenSubtitles lookup: a saved lookup reads back as it was written")

@@ -209,6 +209,16 @@ final class OnlineSubtitleLookup: ObservableObject {
             }
         }
 
+        /// In a menu item's title.
+        nonisolated var short: String {
+            switch self {
+            case .exact: return "Exact Match"
+            case .sameRelease: return "Same Release"
+            case .close: return "Close Match"
+            case .titleOnly: return "Same Title Only"
+            }
+        }
+
         /// The tag in the bubble.
         nonisolated var tag: String {
             switch self {
@@ -218,6 +228,13 @@ final class OnlineSubtitleLookup: ObservableObject {
             case .titleOnly: return "SAME TITLE ONLY"
             }
         }
+    }
+
+    /// The subtitle menus' item that adds a found subtitle, so it can be taken from where
+    /// subtitles are chosen and not only from the bubble (the user's request, 2026-11-22):
+    /// "Add English Subtitles Found Online (Close Match)".
+    nonisolated static func menuTitle(_ result: OpenSubtitlesClient.Result, language: String) -> String {
+        "Add \(Lang.name(language) ?? language) Subtitles Found Online (\(Match(result).short))"
     }
 
     /// What the panel says about a found subtitle: how near it is to the file.

@@ -21,3 +21,21 @@ struct RemoveSubtitleMenu: View {
         }
     }
 }
+
+/// "Add English Subtitles Found Online (Close Match)" in a subtitle menu, when the lookup
+/// found a likely match for the video: one click downloads it, adds it and turns it on,
+/// without going through the bubble.
+struct FoundSubtitleMenuItem: View {
+    /// The video; nil means the one playing.
+    var item: MediaItem? = nil
+    @EnvironmentObject private var player: PlaybackController
+    // Observed so the item comes and goes with the lookup.
+    @ObservedObject private var online = OnlineSubtitleLookup.shared
+    @AppStorage(Prefs.subtitleLanguage) private var language = ""
+
+    var body: some View {
+        if let found = player.foundSubtitle(for: item) {
+            Button(OnlineSubtitleLookup.menuTitle(found, language: language)) { player.addFoundSubtitle(for: item) }
+        }
+    }
+}

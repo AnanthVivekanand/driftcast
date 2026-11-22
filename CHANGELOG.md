@@ -9,6 +9,7 @@ earlier versions are on the [releases page](https://github.com/leechsoftware/dri
 
 - **No OpenSubtitles key needed:** Find Subtitles Online works right away.
 - **Subtitles found for you:** a video with none is looked up on OpenSubtitles by itself, and a bubble offers a likely match.
+- **Add from the menu:** a found match is also in the subtitle menus, one click to add.
 - **Closest subtitles first:** results are sorted by how near their name is to your file's, not by downloads.
 - **CLOSE tag** on subtitles from the same kind of source as your file, which are likely in sync.
 - **A yellow notice** says when nothing was made for your file, and whether the first results are close.

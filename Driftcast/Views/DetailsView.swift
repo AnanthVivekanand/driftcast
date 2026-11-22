@@ -783,6 +783,7 @@ struct SubtitleSection: View {
                 }
             }
             Divider()
+            if missingLanguage != nil { FoundSubtitleMenuItem(item: current) }
             Button("Find Subtitles Online…") { findOnline() }
             Button("Add Subtitle File…") { player.chooseSubtitleFile(for: current) }
             RemoveSubtitleMenu(item: current)

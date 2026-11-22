@@ -922,6 +922,36 @@ final class PlaybackController: ObservableObject {
         selectSubtitle(choice)
     }
 
+    /// The subtitle OpenSubtitles was found to have for a video (the playing one unless another
+    /// is given), when it is one worth offering: what the subtitle menus' "Add … Subtitles
+    /// Found Online" adds. Nil with "I don't care about subtitles" on, and for the playing
+    /// video once it has subtitles in the language.
+    func foundSubtitle(for item: MediaItem? = nil) -> OpenSubtitlesClient.Result? {
+        guard let item = item ?? nowPlaying, !Prefs.bool(Prefs.hideSubtitleNotices) else { return nil }
+        let language = Prefs.string(Prefs.subtitleLanguage)
+        if nowPlaying?.url == item.url, SubtitleChoice.hasAny(subtitleChoices, in: language) { return nil }
+        return OnlineSubtitleLookup.shared.offer(for: item.url, language: language)
+    }
+
+    /// Downloads the found subtitle and adds it to the video, turning it on when that video
+    /// is playing: the bubble's Add Them, from a menu.
+    func addFoundSubtitle(for item: MediaItem? = nil) {
+        guard let item = item ?? nowPlaying else { return }
+        let language = Prefs.string(Prefs.subtitleLanguage)
+        Task {
+            let (file, failure) = await OnlineSubtitleLookup.shared.download(for: item, language: language)
+            if let file {
+                addSubtitleFile(file, to: item)
+            } else if let failure {
+                // A menu has nowhere to say it, unlike the bubble.
+                let alert = NSAlert()
+                alert.messageText = "The subtitles couldn't be added"
+                alert.informativeText = failure.localizedDescription
+                alert.runModal()
+            }
+        }
+    }
+
     /// The subtitle files that can be taken off a video again (the playing one unless another
     /// is given): the ones attached by hand or from OpenSubtitles.
     func removableSubtitles(for item: MediaItem? = nil) -> [URL] {

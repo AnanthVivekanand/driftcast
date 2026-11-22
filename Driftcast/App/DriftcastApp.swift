@@ -329,6 +329,8 @@ extension HelpCommands {
 /// the online search.
 struct SubtitleCommands: Commands {
     @ObservedObject var player: PlaybackController
+    // Observed so the item for a subtitle found online comes and goes with the lookup.
+    @ObservedObject private var online = OnlineSubtitleLookup.shared
     @AppStorage(Prefs.settingsTab) private var settingsTab = "general"
     // Read so that Larger and Smaller enable and disable as the size changes.
     @AppStorage(Prefs.subtitleScale) private var subtitleScale = 1.0
@@ -352,6 +354,12 @@ struct SubtitleCommands: Commands {
             // For the video playing, else the one selected in the list: these were grayed out
             // with nothing playing, though the details panel offers both for the selected
             // video (the user's report, 2026-11-21).
+            // A likely match the lookup found online, one click from here too.
+            if let target = player.subtitleTarget, let found = player.foundSubtitle(for: target) {
+                Button(OnlineSubtitleLookup.menuTitle(found, language: Prefs.string(Prefs.subtitleLanguage))) {
+                    player.addFoundSubtitle(for: target)
+                }
+            }
             Button("Add Subtitle File…") { player.chooseSubtitleFile(for: player.subtitleTarget) }
                 .disabled(player.subtitleTarget == nil)
             Button("Find Subtitles Online…") { player.showSubtitleSearch = true }
