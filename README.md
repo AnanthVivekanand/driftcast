@@ -260,7 +260,7 @@ Conversion produces **Dolby Digital Plus 5.1** (640 kbps), lossless **FLAC** up 
 - **Picture subtitles become text:** Blu-ray PGS and DVD VobSub, in an MKV or as `.sup` and `.idx` files, are read with Apple's Vision framework and cached.
 - **DVB and XSUB** picture subtitles are drawn into the video.
 - **Any text encoding:** UTF-8, UTF-16 and UTF-32, or the legacy code page of the language, including Cyrillic, Greek, Turkish, Hebrew, Arabic, Thai, Vietnamese, Japanese, Chinese and Korean.
-- **Find Subtitles Online:** search OpenSubtitles by exact file match and title, pick one, and it downloads and comes on.
+- **Automatic downloads from OpenSubtitles.** If a video has no subtitles in your language, Driftcast can find them for you. It searches OpenSubtitles using the file itself and the movie or episode title, puts the subtitles made for your exact release first so they stay in sync, and downloads and turns on the best match automatically.
 - **Your rules:** always on, on only when the audio is in another language, or off. A forced track in your language counts.
 - **Your size:** a slider in the Subtitles menu from 60% to 200%, applied on this Mac and on the Chromecast as you drag, and remembered between launches.
 - **"I don't care about subtitles"** keeps them from coming on or being searched for by themselves, hides every notice about them and grays out their settings.
