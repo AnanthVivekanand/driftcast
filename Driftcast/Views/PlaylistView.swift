@@ -481,7 +481,7 @@ struct MediaRow: View {
                     if let titleEditor {
                         titleEditor
                     } else {
-                        TitleLine(item: item)
+                        TitleLine(item: item, episodeName: episodeNameInTitle)
                             .fontWeight(isCurrent ? .semibold : .regular)
                             // Where a press is held, or the selected video clicked, to name it (`TitleHold`).
                             .background(TitleMarker(id: item.id).allowsHitTesting(false))
@@ -569,6 +569,14 @@ struct MediaRow: View {
         isWatched ? 1 : (library.progress[item.url.path]?.fraction ?? 0)
     }
 
+    /// An episode's name for the end of the title line ("The Sopranos S4 E8 · Mergers &
+    /// Acquisitions"), when that line is the cleaned name and not one the person typed.
+    private var episodeNameInTitle: String? {
+        guard item.givenName == nil, let details, details.isEpisode, item.parsedTitle.isEpisode,
+              let name = details.episodeTitle, !name.isEmpty else { return nil }
+        return name
+    }
+
     private var detail: String {
         if missing { return "File not found" }
         if failed { return "Couldn't read this file" }
@@ -581,8 +589,9 @@ struct MediaRow: View {
             parts.append("\(formatTime(max(0, p.duration - p.position))) left")
         }
         if let details {
-            // The title line already says "S4 E7"; this line names the episode.
-            if details.isEpisode, let name = details.episodeTitle { parts.append(name) }
+            // The episode's name is at the end of the title line; here only when that line is
+            // a name the person typed.
+            if episodeNameInTitle == nil, details.isEpisode, let name = details.episodeTitle { parts.append(name) }
             // When it came out: a film's year, the year an episode was first shown. Review
             // scores are in the details panel, with where each comes from.
             if let year = details.listYear { parts.append(String(year)) }

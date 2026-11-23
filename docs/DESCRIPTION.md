@@ -126,7 +126,11 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   short with "…" (the whole list is in its tooltip), so the ratings stay beside the text
   unless the first line itself doesn't fit next to them (a film's IMDb, Rotten Tomatoes and
   Metacritic), when they go under the text, centered, with an empty line between. The year, which leads the first line, is in black and the rest of the
-  line gray (the user's request, 2026-11-22; all of it was gray). In the list, a video whose file is gone shows its warning
+  line gray (the user's request, 2026-11-22; all of it was gray). In the list, an episode's own name is at the end of its name
+  line, "The Sopranos S4 E8 · Mergers & Acquisitions" (the user's request, 2026-11-22; it
+  was in the line under the name, between the time left and the year, where it was often
+  cut off). It gives way first when the row is narrow, and it stays in the lower line for a
+  video the person named by hand, whose name is shown as typed. In the list, a video whose file is gone shows its warning
   triangle in red where its picture was (same day; it was gray, as it still is for a file
   that is there but can't be read). An episode's air date is the line under the genres, "Aired 2002-11-03" (the
   user's placing, 2026-11-22; it was a row of its own under the cast). A film with no poster shows a picture taken from the file itself; that
