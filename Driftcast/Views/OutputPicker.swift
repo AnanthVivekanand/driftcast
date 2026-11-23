@@ -9,12 +9,22 @@ struct OutputPicker: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            // What the menu is for: "This Mac" alone didn't say it chooses where the video
+            // plays (the user's request, 2026-11-22). "Play on" and not "Cast to", which
+            // would read oddly before "This Mac".
+            Text("Play on")
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .padding(.leading, 8)
+                .padding(.trailing, 4)
+                .accessibilityHidden(true)   // the menu's own label says it
             Menu {
                 OutputMenuItems()
             } label: {
                 Label(player.outputName, systemImage: player.outputSymbol)
                     .labelStyle(.titleAndIcon)
             }
+            .accessibilityLabel("Play on \(player.outputName)")
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Choose where to play")

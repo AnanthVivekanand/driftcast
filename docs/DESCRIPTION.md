@@ -126,7 +126,9 @@ version 1.1.1 is marked "(new in 1.1.1)", what changed in 1.1.2 "(new in 1.1.2)"
   short with "…" (the whole list is in its tooltip), so the ratings stay beside the text
   unless the first line itself doesn't fit next to them (a film's IMDb, Rotten Tomatoes and
   Metacritic), when they go under the text, centered, with an empty line between. The year, which leads the first line, is in black and the rest of the
-  line gray (the user's request, 2026-11-22; all of it was gray). In the list, an episode's own name is at the end of its name
+  line gray (the user's request, 2026-11-22; all of it was gray). The toolbar's picker of where to play has "Play on" before
+  the device's name ("Play on This Mac"), which alone didn't say what the menu chooses (the
+  user's request, 2026-11-22). In the list, an episode's own name is at the end of its name
   line, "The Sopranos S4 E8 · Mergers & Acquisitions" (the user's request, 2026-11-22; it
   was in the line under the name, between the time left and the year, where it was often
   cut off). It gives way first when the row is narrow, and it stays in the lower line for a
