@@ -104,15 +104,12 @@ Driftcast.
     OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
     DEALINGS IN THE SOFTWARE.
 
-## Films shown in the screenshots and demo video
+## Shows and films in the screenshots and demo video
 
 These appear only in the project's website and README images, not in the app:
 
-- *Sintel*, © copyright Blender Foundation, <https://durian.blender.org>, licensed under the Creative Commons Attribution 3.0 license.
-- *Tears of Steel*, © copyright Blender Foundation, <https://mango.blender.org>, licensed under the Creative Commons Attribution 3.0 license.
-- *Elephants Dream*, © copyright 2006 Blender Foundation and Netherlands Media Art Institute, <https://orange.blender.org>, licensed under the Creative Commons Attribution 2.5 license.
-
-The plot text visible in the screenshots is from Wikipedia, licensed under CC BY-SA. Frames were scaled and captured inside the app. None of these parties endorses Driftcast.
+- *The Sopranos* is © Home Box Office, Inc. *The Matrix* is © Warner Bros. Entertainment Inc. *Breaking Bad* is © Sony Pictures Television. Their names, posters, artwork, frames and plot text are shown only to demonstrate how the app displays a library; their owners have not endorsed Driftcast.
+- The demo video's narration was generated on a Mac with [Kokoro](https://github.com/hexgrad/kokoro), licensed under the Apache License 2.0.
 
 ## Thanks
 
