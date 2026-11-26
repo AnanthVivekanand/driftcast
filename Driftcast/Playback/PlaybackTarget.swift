@@ -28,6 +28,8 @@ struct TargetStatus {
     var time: Double?
     var finished = false
     var error: String?
+    /// The receiver rejected an HLS item carrying a separate subtitle rendition.
+    var airPlaySubtitlePlaylistRejected = false
     var volume: Double?
     /// The device connection dropped and was re-established; the stream must be loaded again.
     var reconnected = false

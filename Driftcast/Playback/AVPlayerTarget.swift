@@ -20,6 +20,7 @@ final class AVPlayerTarget: PlaybackTarget {
     private var diagnostics: [NSObjectProtocol] = []
     private var waitingObservation: NSKeyValueObservation?
     private var redrawSubtitles: Task<Void, Never>?
+    private var lastLocalPlaybackTime: Double?
     private static let log = Logger(subsystem: "com.leechsoftware.driftcast", category: "player")
 
     init() {
@@ -88,6 +89,7 @@ final class AVPlayerTarget: PlaybackTarget {
 
     func load(_ r: LoadRequest) async throws {
         clearItem()
+        lastLocalPlaybackTime = isExternal ? nil : r.startTime
         let item = AVPlayerItem(url: r.url)
         item.textStyleRules = Self.textStyleRules(scale: SubtitleSize.current)
         Self.log.info("load \(r.url.absoluteString, privacy: .public) at \(r.startTime), external \(self.player.isExternalPlaybackActive)")
@@ -95,7 +97,12 @@ final class AVPlayerTarget: PlaybackTarget {
             Self.log.info("item status \(item.status.rawValue) \(String(describing: item.error), privacy: .public)")
             guard item.status == .failed else { return }
             let message = Self.describe(item)
-            DispatchQueue.main.async { self?.onStatus?(TargetStatus(state: .idle, error: message)) }
+            let rejected = r.subtitleURL != nil && Self.isAirPlayPlaylistRejection(item.error)
+            DispatchQueue.main.async { [weak self, weak item] in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.onStatus?(TargetStatus(state: .idle, time: rejected ? self.lastLocalPlaybackTime : nil,
+                                           error: message, airPlaySubtitlePlaylistRejected: rejected))
+            }
         }
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onStatus?(TargetStatus(state: .idle, finished: true)) }
@@ -103,9 +110,13 @@ final class AVPlayerTarget: PlaybackTarget {
         // A video that stops part-way (the stream ended, the file's disk went away) was only
         // written to the system log: the picture froze and the bar went on saying "Playing".
         failObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] note in
-            let reason = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError)?.localizedDescription
+            let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
             MainActor.assumeIsolated {
-                self?.onStatus?(TargetStatus(state: .idle, error: reason ?? "The video stopped before its end."))
+                guard let self, self.player.currentItem === item else { return }
+                let rejected = r.subtitleURL != nil && Self.isAirPlayPlaylistRejection(error)
+                self.onStatus?(TargetStatus(state: .idle, time: rejected ? self.lastLocalPlaybackTime : nil,
+                                           error: error?.localizedDescription ?? "The video stopped before its end.",
+                                           airPlaySubtitlePlaylistRejected: rejected))
             }
         }
         player.replaceCurrentItem(with: item)
@@ -117,7 +128,11 @@ final class AVPlayerTarget: PlaybackTarget {
         // Another video was loaded, or Stop pressed, while this one was being read: it is not
         // this one's place to seek and start the player.
         guard player.currentItem === item else { throw CancellationError() }
-        if item.status == .failed { throw NSError(domain: "Driftcast", code: 1, userInfo: [NSLocalizedDescriptionKey: Self.describe(item)]) }
+        if item.status == .failed {
+            var details: [String: Any] = [NSLocalizedDescriptionKey: Self.describe(item)]
+            if let error = item.error { details[NSUnderlyingErrorKey] = error }
+            throw NSError(domain: "Driftcast", code: 1, userInfo: details)
+        }
 
         if r.startTime > 0.5 {
             await player.seek(to: CMTime(seconds: r.startTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .positiveInfinity)
@@ -135,6 +150,16 @@ final class AVPlayerTarget: PlaybackTarget {
         return item.error?.localizedDescription ?? "This Mac couldn't play the stream."
     }
 
+    nonisolated static func isAirPlayPlaylistRejection(_ error: Error?) -> Bool {
+        var current = error as NSError?
+        for _ in 0..<5 {
+            guard let nested = current else { break }
+            if nested.domain == NSOSStatusErrorDomain && nested.code == -60034 { return true }
+            current = nested.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
     private func emit() {
         guard player.currentItem != nil else { return }
         var s = TargetStatus()
@@ -145,7 +170,12 @@ final class AVPlayerTarget: PlaybackTarget {
         @unknown default: s.state = .idle
         }
         let t = player.currentTime().seconds
-        if t.isFinite { s.time = t }
+        if t.isFinite {
+            s.time = t
+            // During the AirPlay handoff AVPlayer can report zero before the receiver
+            // accepts or rejects the item. Keep the last position on the Mac for a retry.
+            if !isExternal, t > 0, s.state != .buffering { lastLocalPlaybackTime = t }
+        }
         s.volume = Double(player.volume)
         s.muted = player.isMuted
         onStatus?(s)
@@ -163,6 +193,7 @@ final class AVPlayerTarget: PlaybackTarget {
     func pause() { player.pause() }
 
     func seek(to seconds: Double) {
+        lastLocalPlaybackTime = isExternal ? nil : max(0, seconds)
         player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 

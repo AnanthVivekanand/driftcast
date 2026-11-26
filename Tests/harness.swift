@@ -211,6 +211,34 @@ check(t2 > 32 && t2 < 40 && player.timeControlStatus == .playing, "copy-mode see
 player.pause(); player.replaceCurrentItem(with: nil)
 s1.stop()
 
+// AirPlay can reject the subtitle playlist during handoff or after a track change.
+let airPlayRejection = NSError(domain: NSOSStatusErrorDomain, code: -60034)
+let wrappedRejection = NSError(domain: AVFoundationErrorDomain, code: -11870,
+                               userInfo: [NSUnderlyingErrorKey: airPlayRejection])
+check(AVPlayerTarget.isAirPlayPlaylistRejection(wrappedRejection), "recognizes the wrapped AirPlay playlist rejection")
+check(!AVPlayerTarget.isAirPlayPlaylistRejection(NSError(domain: NSOSStatusErrorDomain, code: -60011)),
+      "other AirPlay failures do not trigger the subtitle fallback")
+let airPlayFallback = StreamPlanner.plan(info: info, file: mkv, profile: .apple(), settings: settings,
+                                         audioIndex: 1, subtitle: choices[0], renderTextSubtitles: true,
+                                         options: PlaybackOptions())
+check(airPlayFallback.isTranscodingVideo && airPlayFallback.rendersTextSubtitles
+      && airPlayFallback.burnSubtitle == choices[0] && airPlayFallback.textSubtitle == nil,
+      "AirPlay fallback renders the selected text track")
+let renderedSession = StreamSession(plan: airPlayFallback, source: mkv, duration: info.duration,
+                                    grid: .fixed(duration: info.duration), cues: subCues)
+let rendered = await_ { try await renderedSession.start(at: 12) }
+check((try? rendered.get()) != nil && !renderedSession.hasSubtitles,
+      "captioned AirPlay stream starts mid-file without a separate rendition: \(rendered)")
+let renderedCodecs = MP4Boxes.codecs(inInit: renderedSession.initSegment() ?? Data())
+check(renderedCodecs.contains { $0.hasPrefix("avc1.") } && renderedCodecs.contains("ac-3"),
+      "captioned AirPlay stream encodes H.264 and retains the original AC-3")
+renderedSession.stop()
+let airPlayCaptionsOff = StreamPlanner.plan(info: info, file: mkv, profile: .apple(), settings: settings,
+                                            audioIndex: 1, subtitle: nil, renderTextSubtitles: true,
+                                            options: PlaybackOptions())
+check(airPlayCaptionsOff.isCopyingVideo && airPlayCaptionsOff.burnSubtitle == nil,
+      "turning captions off restores video passthrough after AirPlay fallback")
+
 // Transcode for Chromecast on the fixed 4 s grid, starting mid-file, then seeking back to 0
 let castGrid = SegmentGrid.fixed(duration: info.duration)
 check(castGrid.count == 10 && castGrid.index(at: 21.9) == 5, "fixed grid \(castGrid.count) segments")

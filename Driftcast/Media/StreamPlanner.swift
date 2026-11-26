@@ -143,6 +143,7 @@ struct StreamPlan: Sendable {
     }
 
     static let segmentSeconds = 4
+    static let renderedSubtitlesFilename = "airplay-subtitles.vtt"
 
     var mode: Mode
     var video: MediaInfo.Video?
@@ -151,6 +152,7 @@ struct StreamPlan: Sendable {
     var audioAction: AudioAction
     var textSubtitle: SubtitleChoice?
     var burnSubtitle: SubtitleChoice?
+    var rendersTextSubtitles = false
     var options: PlaybackOptions
     var notes: [String]
     /// The file's overall bit rate, when ffprobe knew it (for playlist BANDWIDTH estimates).
@@ -241,7 +243,7 @@ struct StreamPlan: Sendable {
         }
 
         var burnSource: String?
-        if let burn = burnSubtitle {
+        if let burn = burnSubtitle, !rendersTextSubtitles {
             switch burn {
             case .embedded(let s):
                 burnSource = "[0:\(s.index)]"
@@ -280,7 +282,10 @@ struct StreamPlan: Sendable {
                     graph += "\(label)bwdif=mode=send_frame:parity=auto:deint=interlaced[deint];"
                     label = "[deint]"
                 }
-                if let src = burnSource {
+                if rendersTextSubtitles {
+                    graph += "\(label)subtitles=\(Self.renderedSubtitlesFilename)[ov];"
+                    label = "[ov]"
+                } else if let src = burnSource {
                     // Picture subtitles (PGS / VobSub) are composited onto the video, their canvas
                     // fitted to the picture first: a 1080-line Blu-ray subtitle over a film cropped
                     // to 1920x800, or over a smaller copy, lost its bottom lines, which is where
@@ -382,9 +387,12 @@ enum StreamPlanner {
     /// sent as a text track instead of being drawn into the video.
     static func plan(info: MediaInfo, file: URL, profile: DeviceProfile, settings: EncoderSettings,
                      audioIndex: Int?, subtitle: SubtitleChoice?, subtitleIsText: Bool = false,
+                     renderTextSubtitles: Bool = false,
                      options: PlaybackOptions) -> StreamPlan {
         var notes: [String] = []
-        let burn = (subtitle?.isPicture == true && !subtitleIsText) ? subtitle : nil
+        let pictureSubtitles = subtitle?.isPicture == true && !subtitleIsText
+        let renderText = renderTextSubtitles && subtitle != nil && !pictureSubtitles && info.video != nil && !profile.audioOnly
+        let burn = pictureSubtitles || renderText ? subtitle : nil
         let text = subtitle != nil && burn == nil ? subtitle : nil
         var heightLimit = min(profile.maxHeight, settings.maxResolution)
         if let v = info.video, v.fps > 31 { heightLimit = min(heightLimit, profile.maxHeightAbove30fps) }
@@ -490,6 +498,7 @@ enum StreamPlanner {
 
         let plan = StreamPlan(mode: direct ? .direct : .hls, video: info.video, videoAction: videoAction,
                               audio: audio, audioAction: audioAction, textSubtitle: text, burnSubtitle: burn,
+                              rendersTextSubtitles: renderText,
                               options: options, notes: notes, sourceBitRate: info.bitRate, sourceStartTime: info.startTime)
         let headline: String
         if direct {

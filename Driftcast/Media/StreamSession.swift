@@ -52,6 +52,7 @@ final class TranscodeJob: @unchecked Sendable {
         guard let exe = FFmpeg.ffmpeg else { throw FFmpegError.notFound }
         process.executableURL = exe
         process.arguments = arguments
+        process.currentDirectoryURL = directory
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         let err = Pipe()
@@ -300,7 +301,7 @@ final class StreamSession: @unchecked Sendable {
         directory = Self.temporaryRoot.appendingPathComponent(id, isDirectory: true)
     }
 
-    var hasSubtitles: Bool { cues != nil }
+    var hasSubtitles: Bool { cues != nil && !plan.rendersTextSubtitles }
 
     // MARK: Lifecycle
 
@@ -308,6 +309,11 @@ final class StreamSession: @unchecked Sendable {
     func start(at time: Double) async throws {
         guard let grid else { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if plan.rendersTextSubtitles {
+            guard let cues, !cues.isEmpty else { throw FFmpegError.failed("The selected subtitles have no readable captions.") }
+            let file = directory.appendingPathComponent(StreamPlan.renderedSubtitlesFilename)
+            try WebVTT.document(cues, shift: 0).write(to: file, atomically: true, encoding: .utf8)
+        }
         if let intro { startIntro(intro) }
         let first = grid.index(at: time)
         startPacing(grid)
