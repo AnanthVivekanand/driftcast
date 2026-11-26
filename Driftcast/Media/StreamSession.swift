@@ -52,7 +52,6 @@ final class TranscodeJob: @unchecked Sendable {
         guard let exe = FFmpeg.ffmpeg else { throw FFmpegError.notFound }
         process.executableURL = exe
         process.arguments = arguments
-        process.currentDirectoryURL = directory
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         let err = Pipe()
@@ -301,7 +300,7 @@ final class StreamSession: @unchecked Sendable {
         directory = Self.temporaryRoot.appendingPathComponent(id, isDirectory: true)
     }
 
-    var hasSubtitles: Bool { cues != nil && !plan.rendersTextSubtitles }
+    var hasSubtitles: Bool { cues != nil }
 
     // MARK: Lifecycle
 
@@ -309,11 +308,6 @@ final class StreamSession: @unchecked Sendable {
     func start(at time: Double) async throws {
         guard let grid else { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if plan.rendersTextSubtitles {
-            guard let cues, !cues.isEmpty else { throw FFmpegError.failed("The selected subtitles have no readable captions.") }
-            let file = directory.appendingPathComponent(StreamPlan.renderedSubtitlesFilename)
-            try WebVTT.document(cues, shift: 0).write(to: file, atomically: true, encoding: .utf8)
-        }
         if let intro { startIntro(intro) }
         let first = grid.index(at: time)
         startPacing(grid)
@@ -717,7 +711,7 @@ final class StreamSession: @unchecked Sendable {
     /// Master playlist that adds a WebVTT subtitle rendition (used for AVPlayer / AirPlay).
     func masterPlaylist() -> String {
         var s = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n"
-        var inf = "BANDWIDTH=20000000"
+        var inf = "BANDWIDTH=\(estimatedBandwidth)"
         if let v = plan.video, plan.isTranscodingVideo == false, v.isHDR {
             inf += ",VIDEO-RANGE=" + (v.colorTransfer == "arib-std-b67" ? "HLG" : "PQ")
         } else if plan.video != nil {

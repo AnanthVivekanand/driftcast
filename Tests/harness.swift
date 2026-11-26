@@ -120,8 +120,9 @@ s1.intro = StreamSession.Intro(card: card!, size: CGSize(width: 1920, height: 10
 let st1 = await_ { try await s1.start(at: 0) }
 check((try? st1.get()) != nil, "apple session started \((try? st1.get()) == nil ? "\(st1)" : "")")
 let master = try! await_ { await MediaServer.shared.url(path: s1.masterPath, host: host) }.get()
-let (_, mdata, _) = fetch(master)
-print(String(decoding: mdata, as: UTF8.self).split(separator: "\n").map { "  | " + $0 }.joined(separator: "\n"))
+let (masterStatus, mdata, _) = fetch(master)
+let masterText = String(decoding: mdata, as: UTF8.self)
+print(masterText.split(separator: "\n").map { "  | " + $0 }.joined(separator: "\n"))
 let (_, pl, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("stream.m3u8"))
 let plText = String(decoding: pl, as: UTF8.self)
 print(plText.split(separator: "\n").prefix(12).map { "  | " + $0 }.joined(separator: "\n"))
@@ -174,6 +175,10 @@ print(String(decoding: seg1, as: UTF8.self).split(separator: "\n").map { "  | " 
 let (castStatus, castData, _) = fetch(master.deletingLastPathComponent().appendingPathComponent("cast.m3u8"))
 let castText = String(decoding: castData, as: UTF8.self)
 print(castText.split(separator: "\n").map { "  | " + $0 }.joined(separator: "\n"))
+let castVariant = castText.split(separator: "\n").first { $0.hasPrefix("#EXT-X-STREAM-INF:BANDWIDTH=") }
+let castBandwidth = castVariant?.split(separator: ",", maxSplits: 1).first
+check(masterStatus == 200 && castBandwidth.map { masterText.contains("\($0),") } == true
+      && masterText.contains("SUBTITLES=\"subs\""), "Apple subtitle playlist uses the same stream bandwidth estimate as Cast")
 check(castStatus == 200 && castText.contains("CODECS=\"hvc1.2.4.L") && castText.contains(",ec-3\"") && castText.contains("RESOLUTION=1920x1080") && castText.contains("FRAME-RATE=24.000"),
       "cast playlist carries HEVC Main 10 + E-AC-3 codec strings and the picture size")
 let initCodecs = MP4Boxes.codecs(inInit: s1.initSegment() ?? Data())
@@ -210,34 +215,6 @@ let t2 = player.currentTime().seconds
 check(t2 > 32 && t2 < 40 && player.timeControlStatus == .playing, "copy-mode seek past converted range plays on at \(String(format: "%.1f", t2)) s (status \(player.timeControlStatus.rawValue))")
 player.pause(); player.replaceCurrentItem(with: nil)
 s1.stop()
-
-// AirPlay can reject the subtitle playlist during handoff or after a track change.
-let airPlayRejection = NSError(domain: NSOSStatusErrorDomain, code: -60034)
-let wrappedRejection = NSError(domain: AVFoundationErrorDomain, code: -11870,
-                               userInfo: [NSUnderlyingErrorKey: airPlayRejection])
-check(AVPlayerTarget.isAirPlayPlaylistRejection(wrappedRejection), "recognizes the wrapped AirPlay playlist rejection")
-check(!AVPlayerTarget.isAirPlayPlaylistRejection(NSError(domain: NSOSStatusErrorDomain, code: -60011)),
-      "other AirPlay failures do not trigger the subtitle fallback")
-let airPlayFallback = StreamPlanner.plan(info: info, file: mkv, profile: .apple(), settings: settings,
-                                         audioIndex: 1, subtitle: choices[0], renderTextSubtitles: true,
-                                         options: PlaybackOptions())
-check(airPlayFallback.isTranscodingVideo && airPlayFallback.rendersTextSubtitles
-      && airPlayFallback.burnSubtitle == choices[0] && airPlayFallback.textSubtitle == nil,
-      "AirPlay fallback renders the selected text track")
-let renderedSession = StreamSession(plan: airPlayFallback, source: mkv, duration: info.duration,
-                                    grid: .fixed(duration: info.duration), cues: subCues)
-let rendered = await_ { try await renderedSession.start(at: 12) }
-check((try? rendered.get()) != nil && !renderedSession.hasSubtitles,
-      "captioned AirPlay stream starts mid-file without a separate rendition: \(rendered)")
-let renderedCodecs = MP4Boxes.codecs(inInit: renderedSession.initSegment() ?? Data())
-check(renderedCodecs.contains { $0.hasPrefix("avc1.") } && renderedCodecs.contains("ac-3"),
-      "captioned AirPlay stream encodes H.264 and retains the original AC-3")
-renderedSession.stop()
-let airPlayCaptionsOff = StreamPlanner.plan(info: info, file: mkv, profile: .apple(), settings: settings,
-                                            audioIndex: 1, subtitle: nil, renderTextSubtitles: true,
-                                            options: PlaybackOptions())
-check(airPlayCaptionsOff.isCopyingVideo && airPlayCaptionsOff.burnSubtitle == nil,
-      "turning captions off restores video passthrough after AirPlay fallback")
 
 // Transcode for Chromecast on the fixed 4 s grid, starting mid-file, then seeking back to 0
 let castGrid = SegmentGrid.fixed(duration: info.duration)

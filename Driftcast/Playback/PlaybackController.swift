@@ -111,7 +111,6 @@ final class PlaybackController: ObservableObject {
     private var housekeeping: Timer?
     /// When the AirPlay device should have started fetching the current stream.
     private var airPlayExpectedSince: Date?
-    private var airPlayNeedsRenderedSubtitles = false
     private var syncWork: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var settingsWork: Task<Void, Never>?
@@ -144,7 +143,6 @@ final class PlaybackController: ObservableObject {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     guard let self, !self.localTarget.isExternal else { return }
-                    self.airPlayNeedsRenderedSubtitles = false
                     self.pauseIfUnseen()
                 }
             }
@@ -415,7 +413,6 @@ final class PlaybackController: ObservableObject {
             }
             var plan = StreamPlanner.plan(info: info, file: item.url, profile: profile, settings: settings,
                                           audioIndex: audioIndex, subtitle: subtitle, subtitleIsText: cues != nil,
-                                          renderTextSubtitles: output == .local && airPlayNeedsRenderedSubtitles,
                                           options: options)
             // The title card lives inside an HLS stream, so a file that could be played as it
             // is gets repackaged (copied, not converted) when the card is on.
@@ -439,7 +436,7 @@ final class PlaybackController: ObservableObject {
             let host = try await target.prepare()
             if stale() { return }
 
-            if let text = plan.textSubtitle ?? (plan.rendersTextSubtitles ? plan.burnSubtitle : nil), cues == nil {
+            if let text = plan.textSubtitle, cues == nil {
                 phase = .preparing("Loading subtitles…")
                 do {
                     cues = try await SubtitleLoader.shared.cues(for: text, media: item.url)
@@ -453,7 +450,6 @@ final class PlaybackController: ObservableObject {
                     case .external(let url): name = url.lastPathComponent
                     }
                     ErrorLog.record("Subtitles", "\(name) for \(item.url.lastPathComponent)", error: error)
-                    if plan.rendersTextSubtitles { throw error }
                     if token == loadToken { subtitle = nil }
                 }
                 if stale() { return }
@@ -515,7 +511,7 @@ final class PlaybackController: ObservableObject {
                 path = session.directPath
             } else if isLocal {
                 // AVPlayer takes the subtitles as an HLS rendition in the master playlist.
-                path = session.hasSubtitles ? session.masterPath : session.streamPath
+                path = cues != nil ? session.masterPath : session.streamPath
             } else {
                 // The Cast player needs the codec attributes; subtitles go as a separate track.
                 path = session.castPath
@@ -524,7 +520,7 @@ final class PlaybackController: ObservableObject {
             if stale() { return }
             streamURL = url
             var subtitleURL: URL?
-            if session.hasSubtitles {
+            if cues != nil {
                 subtitleURL = isLocal ? url : await MediaServer.shared.url(path: session.subtitlePath, host: host)
             }
             // The Chromecast's own screen: the film's poster and name.
@@ -576,7 +572,6 @@ final class PlaybackController: ObservableObject {
             castReconnecting = false
             // Nothing is being served any more: the Mac may sleep again.
             if session == nil { setStreaming(false) }
-            if AVPlayerTarget.isAirPlayPlaylistRejection(error), retryAirPlayWithRenderedSubtitles(at: position, paused: paused) { return }
             ErrorLog.record("Playback", "\(item.url.lastPathComponent) on \(outputName)", error: error)
             phase = .failed(error.localizedDescription)
         }
@@ -591,15 +586,6 @@ final class PlaybackController: ObservableObject {
         streamURL = nil
         mirror.stop()
         setStreaming(false)
-    }
-
-    private func retryAirPlayWithRenderedSubtitles(at time: Double, paused: Bool) -> Bool {
-        guard output == .local, localTarget.isExternal, !airPlayNeedsRenderedSubtitles,
-              plan?.textSubtitle != nil, plan?.video != nil, let item = nowPlaying else { return false }
-        airPlayNeedsRenderedSubtitles = true
-        ErrorLog.record("AirPlay subtitles", "Receiver rejected the subtitle playlist. Retrying with the selected captions rendered into the stream.")
-        start(item, at: time, fresh: false, paused: paused)
-        return true
     }
 
     // MARK: Status from the device
@@ -620,11 +606,6 @@ final class PlaybackController: ObservableObject {
             return
         }
         guard let session, nowPlaying != nil else { return }
-        if s.airPlaySubtitlePlaylistRejected {
-            let previous = s.time.map { session.fileTime(forDeviceTime: $0) }
-            let resumeAt = position <= 0.5 ? previous ?? position : position
-            if retryAirPlayWithRenderedSubtitles(at: resumeAt, paused: phase == .paused) { return }
-        }
         if case .preparing = phase { return }
         if let e = s.error {
             ErrorLog.record("Playback", "\(nowPlaying?.url.lastPathComponent ?? "?") on \(outputName): \(e)")
